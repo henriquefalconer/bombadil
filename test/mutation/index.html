@@ -1,0 +1,37 @@
+<html>
+  <head>
+    <title>Mutation</title>
+  </head>
+  <body>
+    <button>Hit it</button>
+    <ul></ul>
+    <script>
+      const button = document.querySelector("button");
+      const list = document.querySelector("ul");
+      button.addEventListener("click", event => {
+        const date = new Date();
+
+        // Sync
+        document.body.setAttribute("latest", `${date}`);
+
+        // Async 1
+        setTimeout(() => {
+          document.body.setAttribute("latester", `${date}`);
+        }, 1);
+
+
+        // Async 2
+        setTimeout(() => {
+          const item = document.createElement("li");
+          item.textContent = `${date}`;
+          list.appendChild(item);
+
+          const items = list.querySelectorAll("li");
+          if (items.length > 10) {
+            items[0].remove();
+          }
+        }, 5);
+      });
+    </script>
+  </body>
+</html>

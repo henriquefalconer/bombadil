@@ -1,0 +1,648 @@
+use anyhow::{anyhow, bail};
+use chromiumoxide::browser::HeadlessMode;
+use chromiumoxide::cdp::browser_protocol::emulation;
+use chromiumoxide::cdp::browser_protocol::page::{
+    self, ClientNavigationReason, FrameId, NavigationType,
+};
+use chromiumoxide::cdp::browser_protocol::target::{self, TargetId};
+use chromiumoxide::cdp::js_protocol::debugger::{self, CallFrameId};
+use chromiumoxide::cdp::js_protocol::runtime::{self};
+use chromiumoxide::{BrowserConfig, Page};
+use futures::{stream, StreamExt};
+use log::{debug, error, info, warn};
+use serde_json as json;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
+use tokio::spawn;
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::{channel, Receiver, Sender};
+use tokio_stream::wrappers::BroadcastStream;
+use url::Url;
+
+use crate::browser::actions::BrowserAction;
+use crate::browser::state::{BrowserState, ConsoleEntry};
+use crate::state_machine;
+
+pub mod actions;
+mod evaluation;
+pub mod state;
+
+#[derive(Debug)]
+enum InnerState {
+    Initial,
+    Pausing(Vec<ConsoleEntry>),
+    Paused,
+    Resuming(BrowserAction),
+    Navigating,
+    Loading(Vec<ConsoleEntry>),
+    Running(Vec<ConsoleEntry>),
+}
+
+#[derive(Clone, Debug)]
+pub enum InnerEvent {
+    StateRequested,
+    Loaded,
+    Paused {
+        reason: debugger::PausedReason,
+        exception: Option<json::Value>,
+        call_frame_id: Option<CallFrameId>,
+    },
+    Resumed,
+    FrameRequestedNavigation(FrameId, ClientNavigationReason, String),
+    FrameNavigated(FrameId, NavigationType),
+    TargetDestroyed(TargetId),
+    ConsoleEntry(ConsoleEntry),
+    ActionApplied(BrowserAction),
+}
+
+struct BrowserContext {
+    sender: Sender<state_machine::Event<BrowserState>>,
+    actions_sender: Sender<BrowserAction>,
+    inner_events_sender: Sender<InnerEvent>,
+    page: Arc<Page>,
+    frame_id: FrameId,
+    screenshots_directory: PathBuf,
+    #[allow(unused, reason = "this is going into the scripts soon")]
+    origin: Url,
+}
+
+pub struct BrowserOptions {
+    pub headless: bool,
+    pub user_data_directory: PathBuf,
+    pub width: u16,
+    pub height: u16,
+}
+
+pub struct Browser {
+    receiver: Receiver<state_machine::Event<BrowserState>>,
+    actions_sender: Sender<BrowserAction>,
+    inner_events_sender: Sender<InnerEvent>,
+    browser: chromiumoxide::Browser,
+    page: Arc<Page>,
+    origin: Url,
+}
+
+impl Browser {
+    pub async fn new(
+        origin: Url,
+        browser_options: BrowserOptions,
+    ) -> anyhow::Result<Self> {
+        let browser_config = BrowserConfig::builder()
+            .headless_mode(if browser_options.headless {
+                HeadlessMode::New
+            } else {
+                HeadlessMode::False
+            })
+            .window_size(
+                browser_options.width as u32,
+                browser_options.height as u32,
+            )
+            .user_data_dir(browser_options.user_data_directory)
+            .build()
+            .map_err(|s| anyhow!(s))?;
+        let (browser, mut handler) =
+            chromiumoxide::Browser::launch(browser_config).await?;
+
+        let _handle = tokio::spawn(async move {
+            loop {
+                let _ = handler.next().await;
+            }
+        });
+
+        let (sender, receiver) =
+            channel::<state_machine::Event<BrowserState>>(16);
+
+        let (actions_sender, _) = channel::<BrowserAction>(1);
+
+        let page = Arc::new(browser.new_page("about:blank").await?);
+
+        page.enable_dom().await?;
+        page.enable_css().await?;
+        page.enable_runtime().await?;
+        page.enable_debugger().await?;
+
+        page.execute(
+            emulation::SetDeviceMetricsOverrideParams::builder()
+                .width(browser_options.width)
+                .height(browser_options.height)
+                .device_scale_factor(2.0)
+                .mobile(false)
+                .scale(1)
+                .build()
+                .map_err(|err| {
+                    anyhow!(err)
+                        .context("build SetDeviceMetricsOverrideParams failed")
+                })?,
+        )
+        .await?;
+
+        page.execute(
+            debugger::SetPauseOnExceptionsParams::builder()
+                .state(debugger::SetPauseOnExceptionsState::Uncaught)
+                .build()
+                .map_err(|err| {
+                    anyhow!(err)
+                        .context("build SetPauseOnExceptionsState failed")
+                })?,
+        )
+        .await?;
+
+        let screenshots_directory = tempfile::tempdir()?.keep();
+        info!("storing screenshots in {:?}", &screenshots_directory);
+
+        let (inner_events_sender, inner_events_receiver) =
+            channel::<InnerEvent>(1024);
+
+        let frame_id = page
+            .mainframe()
+            .await?
+            .ok_or(anyhow!("no main frame available"))?;
+
+        let context = BrowserContext {
+            sender,
+            actions_sender: actions_sender.clone(),
+            inner_events_sender: inner_events_sender.clone(),
+            page: page.clone(),
+            screenshots_directory,
+            frame_id,
+            origin: origin.clone(),
+        };
+
+        let browser_events = browser
+            .event_listener::<target::EventTargetDestroyed>()
+            .await?
+            .map(|event| InnerEvent::TargetDestroyed(event.target_id.clone()));
+
+        let events_all = stream::select_all(vec![
+            inner_events(&context).await?,
+            Box::pin(browser_events),
+            receiver_to_stream(inner_events_receiver),
+        ]);
+        run_state_machine(context, events_all).await?;
+
+        Ok(Browser {
+            browser,
+            receiver,
+            actions_sender,
+            inner_events_sender,
+            page,
+            origin,
+        })
+    }
+}
+
+impl state_machine::StateMachine for Browser {
+    type State = BrowserState;
+    type Action = BrowserAction;
+
+    async fn initiate(&mut self) -> anyhow::Result<()> {
+        self.page.goto(self.origin.to_string()).await?;
+        Ok(())
+    }
+
+    async fn terminate(&mut self) -> anyhow::Result<()> {
+        self.browser.close().await?;
+        Ok(())
+    }
+
+    async fn next_event(
+        &mut self,
+    ) -> Option<state_machine::Event<Self::State>> {
+        match self.receiver.recv().await {
+            Ok(event) => Some(event),
+            Err(RecvError::Closed) => None,
+            Err(error) => {
+                Some(state_machine::Event::Error(Arc::new(anyhow!(error))))
+            }
+        }
+    }
+
+    async fn request_state(&mut self) {
+        let _ = self.inner_events_sender.send(InnerEvent::StateRequested);
+    }
+
+    async fn apply(&mut self, action: Self::Action) -> anyhow::Result<()> {
+        self.actions_sender.send(action)?;
+        Ok(())
+    }
+}
+
+async fn inner_events(
+    context: &BrowserContext,
+) -> anyhow::Result<Pin<Box<dyn stream::Stream<Item = InnerEvent> + Send>>> {
+    type InnerEventStream =
+        Pin<Box<dyn stream::Stream<Item = InnerEvent> + Send>>;
+
+    let events_loaded = Box::pin(
+        context
+            .page
+            .event_listener::<page::EventLoadEventFired>()
+            .await?
+            .map(|_| InnerEvent::Loaded),
+    ) as InnerEventStream;
+
+    let events_paused = Box::pin(
+        context
+            .page
+            .event_listener::<debugger::EventPaused>()
+            .await?
+            .map(|event| InnerEvent::Paused {
+                reason: event.reason.clone(),
+                exception: event.data.clone(),
+                call_frame_id: event
+                    .call_frames
+                    .first()
+                    .map(|f| f.call_frame_id.clone()),
+            }),
+    ) as InnerEventStream;
+
+    let events_resumed = Box::pin(
+        context
+            .page
+            .event_listener::<debugger::EventResumed>()
+            .await?
+            .map(|_| InnerEvent::Resumed),
+    ) as InnerEventStream;
+
+    let events_frame_requested_navigation = Box::pin(
+        context
+            .page
+            .event_listener::<page::EventFrameRequestedNavigation>()
+            .await?
+            .map(|nav| {
+                InnerEvent::FrameRequestedNavigation(
+                    nav.frame_id.clone(),
+                    nav.reason.clone(),
+                    nav.url.clone(),
+                )
+            }),
+    ) as InnerEventStream;
+
+    let events_frame_navigated = Box::pin(
+        context
+            .page
+            .event_listener::<page::EventFrameNavigated>()
+            .await?
+            .map(|nav| {
+                InnerEvent::FrameNavigated(
+                    nav.frame.id.clone(),
+                    nav.r#type.clone(),
+                )
+            }),
+    ) as InnerEventStream;
+
+    let events_target_destroyed = Box::pin(
+        context
+            .page
+            .event_listener::<target::EventTargetDestroyed>()
+            .await?
+            .map(|event| InnerEvent::TargetDestroyed(event.target_id.clone())),
+    ) as InnerEventStream;
+
+    let events_console = Box::pin(
+        context
+            .page
+            .event_listener::<runtime::EventConsoleApiCalled>()
+            .await?
+            .filter_map(async |call| {
+                let level = match call.r#type {
+                    runtime::ConsoleApiCalledType::Error => {
+                        state::ConsoleEntryLevel::Error
+                    }
+                    runtime::ConsoleApiCalledType::Warning => {
+                        state::ConsoleEntryLevel::Warning
+                    }
+                    _ => return None,
+                };
+
+                Some(InnerEvent::ConsoleEntry(ConsoleEntry {
+                    timestamp: UNIX_EPOCH
+                        + Duration::from_secs_f64(
+                            *call.timestamp.inner() / 1000.0,
+                        ),
+                    level,
+                    args: call.args.iter().map(remote_object_to_json).collect(),
+                }))
+            }),
+    ) as InnerEventStream;
+
+    let events_action_applied = Box::pin(
+        receiver_to_stream(context.actions_sender.subscribe())
+            .map(|action| InnerEvent::ActionApplied(action)),
+    );
+
+    Ok(Box::pin(stream::select_all(vec![
+        events_loaded,
+        events_paused,
+        events_resumed,
+        events_frame_requested_navigation,
+        events_frame_navigated,
+        events_target_destroyed,
+        events_console,
+        events_action_applied,
+    ])))
+}
+
+async fn run_state_machine(
+    context: BrowserContext,
+    mut events: impl stream::Stream<Item = InnerEvent> + Send + Unpin + 'static,
+) -> anyhow::Result<()> {
+    spawn::<Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>>(
+        Box::pin(async move {
+            let process_event =
+                async |state_current: InnerState,
+                       event: InnerEvent|
+                       -> anyhow::Result<InnerState> {
+                    Ok(match (state_current, event) {
+                        (
+                            InnerState::Running(console_entries),
+                            InnerEvent::StateRequested,
+                        ) => {
+                            let _ = spawn(pause(context.page.clone()));
+                            InnerState::Pausing(console_entries)
+                        }
+                        (state, InnerEvent::StateRequested) => {
+                            debug!(
+                                "cannot request new browser state when in state {:?}, ignoring",
+                                &state
+                            );
+                            state
+                        }
+                        (
+                            state,
+                            InnerEvent::Paused {
+                                reason,
+                                exception,
+                                call_frame_id,
+                            },
+                        ) => {
+                            let console_entries = match &state {
+                                InnerState::Pausing(console_entries) => {
+                                    console_entries.clone()
+                                }
+                                InnerState::Initial => vec![],
+                                InnerState::Paused => vec![],
+                                InnerState::Resuming(_) => vec![],
+                                InnerState::Navigating => vec![],
+                                InnerState::Loading(console_entries) => {
+                                    console_entries.clone()
+                                }
+                                InnerState::Running(console_entries) => {
+                                    console_entries.clone()
+                                }
+                            };
+                            let exception = match reason {
+                                debugger::PausedReason::Exception => {
+                                    if let Some(json::Value::Object(object)) =
+                                        exception
+                                    {
+                                        object
+                                            .get("description")
+                                            .map(|value| value.clone())
+                                            .or(Some(json::Value::Object(
+                                                object,
+                                            )))
+                                    } else {
+                                        bail!(
+                                            "unexpected exception data: {:?}",
+                                            &exception
+                                        )
+                                    }
+                                }
+                                debugger::PausedReason::PromiseRejection => {
+                                    if let Some(json::Value::Object(object)) =
+                                        exception
+                                    {
+                                        object
+                                            .get("value")
+                                            .map(|value| value.clone())
+                                            .or(Some(json::Value::Object(
+                                                object,
+                                            )))
+                                    } else {
+                                        bail!("unexpected promise rejection data: {:?}", &exception)
+                                    }
+                                }
+                                debugger::PausedReason::Other => None,
+                                other => {
+                                    bail!("unexpected pause reason {:?} when in state: {:?}", other, &state)
+                                }
+                            };
+
+                            let call_frame_id = call_frame_id.ok_or(
+                                anyhow!("no call frame id at breakpoint"),
+                            )?;
+                            let browser_state = Arc::new(
+                                BrowserState::current(
+                                    context.page.clone(),
+                                    &call_frame_id,
+                                    console_entries,
+                                    exception,
+                                    &context.screenshots_directory,
+                                )
+                                .await?,
+                            );
+
+                            context.sender.send(
+                                state_machine::Event::StateChanged(
+                                    browser_state.clone(),
+                                ),
+                            )?;
+
+                            InnerState::Paused
+                        }
+                        (
+                            InnerState::Paused,
+                            InnerEvent::ActionApplied(browser_action),
+                        ) => {
+                            context
+                                .page
+                                .execute(
+                                    debugger::ResumeParams::builder().build(),
+                                )
+                                .await?;
+                            InnerState::Resuming(browser_action)
+                        }
+                        (InnerState::Running(_), InnerEvent::Resumed) => {
+                            warn!("running + resumed");
+                            InnerState::Running(vec![])
+                        }
+                        (
+                            InnerState::Resuming(browser_action),
+                            InnerEvent::Resumed,
+                        ) => {
+                            let action = browser_action.clone();
+                            let page = context.page.clone();
+                            // We can't block on running the action, in case it synchronously
+                            // throws an uncaught exception blocking the evaluation indefinitely.
+                            // This gives us a chance to receive the "Debugger.paused" event and
+                            // resume (extracting the uncaught exception information).
+                            spawn(async move {
+                                match action.apply(&page).await {
+                                    Ok(_) => {}
+                                    Err(err) => error!(
+                                        "failed to apply action {:?}: {:?}",
+                                        action, err
+                                    ),
+                                }
+                            });
+                            InnerState::Running(vec![])
+                        }
+                        (
+                            InnerState::Loading(console_entries),
+                            InnerEvent::Loaded,
+                        ) => {
+                            debug!("setting up DOM breakpoints");
+
+                            context
+                                .inner_events_sender
+                                .send(InnerEvent::StateRequested)?;
+                            InnerState::Running(console_entries)
+                        }
+                        (
+                            state,
+                            InnerEvent::FrameRequestedNavigation(
+                                frame_id,
+                                reason,
+                                url,
+                            ),
+                        ) => {
+                            if frame_id == context.frame_id {
+                                info!(
+                                    "navigating to {} due to {:?} (current state is {:?})",
+                                    url, reason, state
+                                );
+                                InnerState::Navigating
+                            } else {
+                                state
+                            }
+                        }
+                        (
+                            InnerState::Loading(mut console_entries),
+                            InnerEvent::ConsoleEntry(entry),
+                        ) => {
+                            console_entries.push(entry);
+                            InnerState::Loading(console_entries)
+                        }
+                        (
+                            InnerState::Running(mut console_entries),
+                            InnerEvent::ConsoleEntry(entry),
+                        ) => {
+                            console_entries.push(entry);
+                            InnerState::Running(console_entries)
+                        }
+                        (
+                            InnerState::Pausing(mut console_entries),
+                            InnerEvent::ConsoleEntry(entry),
+                        ) => {
+                            console_entries.push(entry);
+                            InnerState::Pausing(console_entries)
+                        }
+                        (
+                            InnerState::Navigating,
+                            InnerEvent::ConsoleEntry(_),
+                        ) => InnerState::Navigating,
+                        (
+                            state,
+                            InnerEvent::FrameNavigated(
+                                frame_id,
+                                navigation_type,
+                            ),
+                        ) => {
+                            if frame_id == context.frame_id {
+                                match navigation_type {
+                                    NavigationType::Navigation => {
+                                        InnerState::Loading(vec![])
+                                    }
+                                    // Navigating history with bfcache doesn't yield a "loaded"
+                                    // event so we jump straight into `Running`.
+                                    NavigationType::BackForwardCacheRestore => {
+                                        context
+                                            .inner_events_sender
+                                            .send(InnerEvent::StateRequested)?;
+                                        InnerState::Running(vec![])
+                                    }
+                                }
+                            } else {
+                                state
+                            }
+                        }
+                        (state, InnerEvent::TargetDestroyed(target_id)) => {
+                            if target_id == *context.page.target_id() {
+                                bail!(
+                                    "page target {:?} was destroyed",
+                                    target_id
+                                );
+                            } else {
+                                state
+                            }
+                        }
+                        (state, event) => {
+                            bail!(
+                                "unhandled transition: {:?} + {:?}",
+                                state,
+                                event
+                            );
+                        }
+                    })
+                };
+
+            let mut state_current = InnerState::Initial;
+            loop {
+                match events.next().await {
+                    Some(event) => {
+                        match process_event(state_current, event).await {
+                            Ok(state_new) => state_current = state_new,
+                            Err(err) => {
+                                context.sender.send(
+                                    state_machine::Event::Error(Arc::new(
+                                        anyhow!("process_event: {:?}", err),
+                                    )),
+                                )?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                    None => {
+                        info!("no more events, closing state machine loop");
+                        return Ok(());
+                    }
+                };
+            }
+        }),
+    );
+    Ok(())
+}
+
+fn receiver_to_stream<T: Clone + Send + 'static>(
+    receiver: Receiver<T>,
+) -> Pin<Box<dyn stream::Stream<Item = T> + Send>> {
+    Box::pin(BroadcastStream::new(receiver).filter_map(async |r| {
+        if let Ok(x) = r {
+            Some(x)
+        } else {
+            None
+        }
+    }))
+}
+
+async fn pause(page: Arc<Page>) -> anyhow::Result<()> {
+    page.evaluate_function("function () { debugger; }")
+        .await
+        .map_err(|err| anyhow!(err).context("evaluate function call failed"))?;
+    Ok(())
+}
+
+fn remote_object_to_json(object: &runtime::RemoteObject) -> json::Value {
+    match (&object.r#type, &object.value, &object.description) {
+        (_, Some(value), _) => value.clone(),
+        (_, None, Some(description)) => {
+            json::Value::String(description.clone())
+        }
+        (r#type, _, _) => {
+            json::Value::String(format!("<object of type {:?}>", r#type))
+        }
+    }
+}

@@ -1,0 +1,24 @@
+<html>
+  <head>
+    <title>Uncaught Exception</title>
+  </head>
+  <body>
+    <button id="a">A</button>
+    <button id="b">B</button>
+    <button id="c">C</button>
+
+    <script>
+      const buttons = document.querySelectorAll("button");
+      const all = new Set([..."ABC"]);
+      const entered = new Set();
+      for (const button of buttons) {
+        button.addEventListener("click", event => {
+          entered.add(event.target.textContent);
+          if (all.difference(entered).size === 0) {
+            throw new Error("oh no you pressed all of them");
+          }
+        });
+      }
+    </script>
+  </body>
+</html>

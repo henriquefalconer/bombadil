@@ -1,0 +1,29 @@
+<html>
+  <head>
+    <title>Unhandled Promise Rejection</title>
+  </head>
+  <body>
+    <button id="a">A</button>
+    <button id="b">B</button>
+    <button id="c">C</button>
+
+    <script>
+      function run() {
+        return new Promise((resolve, reject) => {
+          const buttons = document.querySelectorAll("button");
+          const all = new Set([..."ABC"]);
+          const entered = new Set();
+          for (const button of buttons) {
+            button.addEventListener("click", event => {
+              entered.add(event.target.textContent);
+              if (all.difference(entered).size === 0) {
+                reject("oh no you pressed all of them");
+              }
+            });
+          }
+        });
+      }
+      run();
+    </script>
+  </body>
+</html>
