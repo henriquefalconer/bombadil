@@ -1,9 +1,11 @@
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
-use crate::browser::actions::available_actions;
+use crate::browser::actions::{available_actions, Timeout};
 use crate::state_machine::{self, StateMachine};
 use ::url::Url;
 use anyhow::bail;
+use hegel::r#gen::BoxedGenerator;
+use hegel::Generate;
 use log::{debug, info};
 use serde_json as json;
 use tokio::time::timeout;
@@ -12,24 +14,33 @@ use crate::browser::state::{BrowserState, ConsoleEntryLevel};
 use crate::browser::{Browser, BrowserOptions};
 
 pub async fn run(browser: &mut Browser) -> anyhow::Result<()> {
-    let mut rng = rand::rng();
-    let mut last_action_timeout = Duration::from_secs(1);
+    let mut last_action_timeout = Timeout::from_secs(1);
     loop {
-        match timeout(last_action_timeout, browser.next_event()).await {
+        match timeout(last_action_timeout.to_duration(), browser.next_event())
+            .await
+        {
             Ok(Some(event)) => match event {
                 state_machine::Event::StateChanged(state) => {
                     // very basic check until we have spec language and all that
                     check_page_ok(&state).await?;
 
                     let actions = available_actions(&state).await?;
-                    match actions.pick(&mut rng) {
-                        Some((action, timeout)) => {
+                    match actions
+                        .map(|(action, timeout)| {
+                            let timeout = timeout.clone();
+                            BoxedGenerator::new(
+                                action
+                                    .generator()
+                                    .map(move |action| (action, timeout)),
+                            )
+                        })
+                        .pick()
+                        .generate()
+                    {
+                        (action, timeout) => {
                             info!("picked action: {:?}", action);
                             browser.apply(action.clone()).await?;
                             last_action_timeout = timeout;
-                        }
-                        _ => {
-                            debug!("no actions to apply, waiting...");
                         }
                     }
                 }

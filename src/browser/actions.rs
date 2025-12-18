@@ -3,7 +3,9 @@ use std::time::Duration;
 use anyhow::{anyhow, bail};
 use chromiumoxide::cdp::browser_protocol::{input, page};
 use chromiumoxide::Page;
+use hegel::r#gen::{floats, just, one_of, BoxedGenerator, Generate};
 use include_dir::{include_dir, Dir};
+use serde::Serialize;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json as json;
 
@@ -16,7 +18,7 @@ pub mod keys;
 pub mod tree;
 
 #[allow(unused, reason = "some fields are useful for debugging")]
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BrowserAction {
     Back,
     Click {
@@ -41,7 +43,26 @@ pub enum BrowserAction {
     Reload,
 }
 
-type WithTimeout<T> = (T, Duration);
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct Timeout {
+    millis: u64,
+}
+
+impl Timeout {
+    pub fn from_millis(millis: u64) -> Self {
+        Timeout { millis }
+    }
+
+    pub fn from_secs(secs: u64) -> Self {
+        Timeout {
+            millis: secs.saturating_mul(1000),
+        }
+    }
+
+    pub fn to_duration(&self) -> Duration {
+        Duration::from_millis(self.millis)
+    }
+}
 
 impl BrowserAction {
     pub async fn apply(&self, page: &Page) -> anyhow::Result<()> {
@@ -126,6 +147,53 @@ impl BrowserAction {
         };
         Ok(())
     }
+
+    pub fn generator(&self) -> BoxedGenerator<Self> {
+        match self {
+            BrowserAction::Back => {
+                BoxedGenerator::new(just(BrowserAction::Back))
+            }
+            BrowserAction::Click { .. } => {
+                BoxedGenerator::new(just(self.clone()))
+            }
+            BrowserAction::TypeText { .. } => BoxedGenerator::new(
+                hegel::r#gen::text()
+                    .map(|text| BrowserAction::TypeText { text }),
+            ),
+            BrowserAction::PressKey { .. } => BoxedGenerator::new(
+                one_of(vec![
+                    BoxedGenerator::new(hegel::r#gen::just::<u8>(13)),
+                    BoxedGenerator::new(hegel::r#gen::just::<u8>(27)),
+                ])
+                .map(|code| BrowserAction::PressKey { code }),
+            ),
+            BrowserAction::ScrollUp { origin, distance } => {
+                let origin = origin.clone();
+                BoxedGenerator::new(
+                    floats().with_min(*distance / 2.0).with_max(*distance).map(
+                        move |distance| BrowserAction::ScrollUp {
+                            origin,
+                            distance,
+                        },
+                    ),
+                )
+            }
+            BrowserAction::ScrollDown { origin, distance } => {
+                let origin = origin.clone();
+                BoxedGenerator::new(
+                    floats().with_min(*distance / 2.0).with_max(*distance).map(
+                        move |distance| BrowserAction::ScrollDown {
+                            origin,
+                            distance,
+                        },
+                    ),
+                )
+            }
+            BrowserAction::Reload => {
+                BoxedGenerator::new(just(BrowserAction::Reload))
+            }
+        }
+    }
 }
 
 static ACTIONS_DIR: Dir =
@@ -153,46 +221,37 @@ async fn run_script<Input: Into<json::Value>, Output: DeserializeOwned>(
 async fn run_actions_script(
     state: &BrowserState,
     name: impl Into<&str>,
-) -> anyhow::Result<Vec<(Weight, Tree<WithTimeout<BrowserAction>>)>> {
+) -> anyhow::Result<Vec<Tree<(BrowserAction, Timeout)>>> {
     let actions: Vec<(Weight, u64, BrowserAction)> =
         run_script(state, name, ()).await?;
     Ok(actions
         .iter()
-        .map(|(weight, timeout_ms, action)| {
-            (
-                *weight,
-                Tree::Leaf((
-                    action.clone(),
-                    Duration::from_millis(*timeout_ms),
-                )),
-            )
+        .map(|(_weight, timeout_ms, action)| {
+            Tree::Leaf((action.clone(), Timeout::from_millis(*timeout_ms)))
         })
         .collect::<Vec<_>>())
 }
 
 pub async fn available_actions(
     state: &BrowserState,
-) -> anyhow::Result<Tree<WithTimeout<BrowserAction>>> {
+) -> anyhow::Result<Tree<(BrowserAction, Timeout)>> {
     let tree = Tree::Branch(vec![
-        (2, Tree::Branch(run_actions_script(state, "clicks").await?)),
-        (2, Tree::Branch(run_actions_script(state, "inputs").await?)),
-        (1, Tree::Branch(run_actions_script(state, "scrolls").await?)),
+        (Tree::Branch(run_actions_script(state, "clicks").await?)),
+        (Tree::Branch(run_actions_script(state, "inputs").await?)),
+        (Tree::Branch(run_actions_script(state, "scrolls").await?)),
     ])
     .prune();
 
     if state.content_type != "text/html" {
-        return Ok(Tree::Leaf((BrowserAction::Back, Duration::from_secs(2))));
+        return Ok(Tree::Leaf((BrowserAction::Back, Timeout::from_secs(2))));
     }
 
     if let Some(tree) = tree {
         Ok(tree)
     } else {
         Ok(Tree::Branch(vec![
-            (5, Tree::Leaf((BrowserAction::Back, Duration::from_secs(2)))),
-            (
-                1,
-                Tree::Leaf((BrowserAction::Reload, Duration::from_secs(1))),
-            ),
+            (Tree::Leaf((BrowserAction::Back, Timeout::from_secs(2)))),
+            Tree::Leaf((BrowserAction::Reload, Timeout::from_secs(1))),
         ]))
     }
 }

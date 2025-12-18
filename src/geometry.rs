@@ -1,7 +1,7 @@
 use chromiumoxide::layout;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Copy, Clone, Deserialize, Debug)]
+#[derive(Copy, Clone, Serialize, Deserialize, Debug)]
 pub struct Point {
     pub x: f64,
     pub y: f64,
