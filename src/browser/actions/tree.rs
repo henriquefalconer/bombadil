@@ -1,3 +1,4 @@
+use hegel::r#gen::integers;
 use rand::Rng;
 
 pub type Weight = u16;
