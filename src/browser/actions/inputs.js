@@ -8,10 +8,7 @@ function type_text() {
 
   if (element.tagName === "TEXTAREA") {
     return [
-      [1, 50, { TypeText: { text: "testing" }}],
-      [1, 50, { TypeText: { text: "\t" }}],
-      [1, 50, { TypeText: { text: "\n" }}],
-      [1, 50, { TypeText: { text: " " }}],
+      [1, 50, { TypeText: { format: "Text" } }],
     ];
   }
 
@@ -19,15 +16,21 @@ function type_text() {
     switch (element.type) {
       case "text":
         return [
-          [1, 50, { TypeText: { text: "testing" } }],
-          [1, 50, { TypeText: { text: " " } }],
-          [1, 50, { TypeText: { text: "\t" } }],
-          [1, 50, { TypeText: { text: "❤️" } }],
-          [1, 50, { PressKey: { code: 13 } }], // Enter
+          [1, 50, "PressKey"],
+          [1, 50, { TypeText: { format: "Text" } }],
+        ];
+      case "email":
+        return [
+          [1, 50, "PressKey"],
+          [1, 50, { TypeText: { format: "Email" } }],
         ];
       case "number":
-        return [[1, 50, { TypeText: { text: "0" }}]]; // TODO: better numbers (in range, etc)
-      // TODO: support other types
+        return [
+          [1, 50, "PressKey"],
+          [1, 50, { TypeText: { format: "Number" } }]
+        ];
+
+      case "color":
       default:
         return [];
     }

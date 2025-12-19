@@ -4,21 +4,30 @@ use serde::Deserialize;
 use crate::browser::actions::{tree::Tree, BrowserAction, Timeout};
 
 pub fn generate_action<'a>(
-    action: BrowserAction,
+    action: BrowserActionCandidate,
 ) -> BoxedGenerator<'a, BrowserAction> {
     match action {
-        BrowserAction::Back => just(BrowserAction::Back).boxed(),
-        BrowserAction::Click { .. } => just(action.clone()).boxed(),
-        BrowserAction::TypeText { .. } => hegel::r#gen::text()
+        BrowserActionCandidate::Back => just(BrowserAction::Back).boxed(),
+        BrowserActionCandidate::Click {
+            name,
+            content,
+            point,
+        } => just(BrowserAction::Click {
+            name: name.clone(),
+            content: content.clone(),
+            point: point.clone(),
+        })
+        .boxed(),
+        BrowserActionCandidate::TypeText => hegel::r#gen::text()
             .map(|text| BrowserAction::TypeText { text })
             .boxed(),
-        BrowserAction::PressKey { .. } => one_of(vec![
+        BrowserActionCandidate::PressKey { .. } => one_of(vec![
             hegel::r#gen::just::<u8>(13).boxed(),
             hegel::r#gen::just::<u8>(27).boxed(),
         ])
         .map(|code| BrowserAction::PressKey { code })
         .boxed(),
-        BrowserAction::ScrollUp { origin, distance } => {
+        BrowserActionCandidate::ScrollUp { origin, distance } => {
             let origin = origin.clone();
             floats()
                 .with_min(distance / 2.0)
@@ -29,7 +38,7 @@ pub fn generate_action<'a>(
                 })
                 .boxed()
         }
-        BrowserAction::ScrollDown { origin, distance } => {
+        BrowserActionCandidate::ScrollDown { origin, distance } => {
             let origin = origin.clone();
             floats()
                 .with_min(distance / 2.0)
@@ -40,7 +49,7 @@ pub fn generate_action<'a>(
                 })
                 .boxed()
         }
-        BrowserAction::Reload => just(BrowserAction::Reload).boxed(),
+        BrowserActionCandidate::Reload => just(BrowserAction::Reload).boxed(),
     }
 }
 
@@ -57,7 +66,7 @@ pub fn pick_from_tree<'a, T: for<'de> Deserialize<'de> + 'static>(
 }
 
 pub fn pick_action(
-    actions: Tree<(BrowserAction, Timeout)>,
+    actions: Tree<(BrowserActionCandidate, Timeout)>,
 ) -> (BrowserAction, Timeout) {
     pick_from_tree(&actions.map(|(action, timeout)| {
         let action = action.clone();

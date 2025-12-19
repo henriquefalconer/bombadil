@@ -19,7 +19,36 @@ pub mod keys;
 pub mod random;
 pub mod tree;
 
-#[allow(unused, reason = "some fields are useful for debugging")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum BrowserActionCandidate {
+    Back,
+    Click {
+        name: String,
+        content: Option<String>,
+        point: Point,
+    },
+    TypeText {
+        format: TypeTextFormat,
+    },
+    PressKey,
+    ScrollUp {
+        origin: Point,
+        distance: f64,
+    },
+    ScrollDown {
+        origin: Point,
+        distance: f64,
+    },
+    Reload,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum TypeTextFormat {
+    Text,
+    Email,
+    Number,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BrowserAction {
     Back,
@@ -46,23 +75,16 @@ pub enum BrowserAction {
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-pub struct Timeout {
-    millis: u64,
-}
+pub struct Timeout(u64);
 
 impl Timeout {
-    pub fn from_millis(millis: u64) -> Self {
-        Timeout { millis }
-    }
-
     pub fn from_secs(secs: u64) -> Self {
-        Timeout {
-            millis: secs.saturating_mul(1000),
-        }
+        Timeout(secs.saturating_mul(1000))
     }
 
     pub fn to_duration(&self) -> Duration {
-        Duration::from_millis(self.millis)
+        let Timeout(millis) = self;
+        Duration::from_millis(*millis)
     }
 }
 
@@ -171,25 +193,26 @@ async fn run_script<Input: Into<json::Value>, Output: DeserializeOwned>(
     state
         .evaluate_function_call(script_contents, vec![input.into()])
         .await
+        .map_err(|err| anyhow!("script call ({}) failed: {}", script_path, err))
 }
 
 async fn run_actions_script(
     state: &BrowserState,
     name: impl Into<&str>,
-) -> Result<Vec<Tree<(BrowserAction, Timeout)>>> {
-    let actions: Vec<(Weight, u64, BrowserAction)> =
+) -> Result<Vec<Tree<(BrowserActionCandidate, Timeout)>>> {
+    let actions: Vec<(Weight, Timeout, BrowserActionCandidate)> =
         run_script(state, name, ()).await?;
     Ok(actions
         .iter()
-        .map(|(_weight, timeout_ms, action)| {
-            Tree::Leaf((action.clone(), Timeout::from_millis(*timeout_ms)))
+        .map(|(_weight, timeout, action)| {
+            Tree::Leaf((action.clone(), *timeout))
         })
         .collect::<Vec<_>>())
 }
 
 pub async fn available_actions(
     state: &BrowserState,
-) -> Result<Tree<(BrowserAction, Timeout)>> {
+) -> Result<Tree<(BrowserActionCandidate, Timeout)>> {
     let tree = Tree::Branch(vec![
         (Tree::Branch(run_actions_script(state, "clicks").await?)),
         (Tree::Branch(run_actions_script(state, "inputs").await?)),
@@ -198,15 +221,18 @@ pub async fn available_actions(
     .prune();
 
     if state.content_type != "text/html" {
-        return Ok(Tree::Leaf((BrowserAction::Back, Timeout::from_secs(2))));
+        return Ok(Tree::Leaf((
+            BrowserActionCandidate::Back,
+            Timeout::from_secs(2),
+        )));
     }
 
     if let Some(tree) = tree {
         Ok(tree)
     } else {
         Ok(Tree::Branch(vec![
-            (Tree::Leaf((BrowserAction::Back, Timeout::from_secs(2)))),
-            Tree::Leaf((BrowserAction::Reload, Timeout::from_secs(1))),
+            (Tree::Leaf((BrowserActionCandidate::Back, Timeout::from_secs(2)))),
+            Tree::Leaf((BrowserActionCandidate::Reload, Timeout::from_secs(1))),
         ]))
     }
 }
