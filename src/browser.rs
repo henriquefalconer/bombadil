@@ -446,274 +446,13 @@ async fn run_state_machine(
 ) -> anyhow::Result<()> {
     spawn::<Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>>(
         Box::pin(async move {
-            let process_event =
-                async |state_current: InnerState,
-                       event: InnerEvent|
-                       -> anyhow::Result<InnerState> {
-                    Ok(match (state_current, event) {
-                        (
-                            InnerState::Running(console_entries),
-                            InnerEvent::StateRequested,
-                        ) => {
-                            let _ = spawn(pause(context.page.clone()));
-                            InnerState::Pausing(console_entries)
-                        }
-                        (
-                            InnerState::Running(console_entries),
-                            InnerEvent::NodeTreeModified(modification),
-                        ) => {
-                            handle_node_modification(&context, &modification)
-                                .await?;
-                            let _ = spawn(pause(context.page.clone()));
-                            InnerState::Pausing(console_entries)
-                        }
-                        (state, InnerEvent::StateRequested) => {
-                            debug!(
-                                "cannot request new browser state when in state {:?}, ignoring",
-                                &state
-                            );
-                            state
-                        }
-                        (state, InnerEvent::NodeTreeModified(modification)) => {
-                            handle_node_modification(&context, &modification)
-                                .await?;
-                            state
-                        }
-                        (
-                            state,
-                            InnerEvent::Paused {
-                                reason,
-                                exception,
-                                call_frame_id,
-                            },
-                        ) => {
-                            let console_entries = match &state {
-                                InnerState::Pausing(console_entries) => {
-                                    console_entries.clone()
-                                }
-                                InnerState::Initial => vec![],
-                                InnerState::Paused => vec![],
-                                InnerState::Resuming(_) => vec![],
-                                InnerState::Navigating => vec![],
-                                InnerState::Loading(console_entries) => {
-                                    console_entries.clone()
-                                }
-                                InnerState::Running(console_entries) => {
-                                    console_entries.clone()
-                                }
-                            };
-                            let exception = match reason {
-                                debugger::PausedReason::Exception => {
-                                    if let Some(json::Value::Object(object)) =
-                                        exception
-                                    {
-                                        object
-                                            .get("description")
-                                            .map(|value| value.clone())
-                                            .or(Some(json::Value::Object(
-                                                object,
-                                            )))
-                                            .map(Exception::UncaughtException)
-                                    } else {
-                                        bail!(
-                                            "unexpected exception data: {:?}",
-                                            &exception
-                                        )
-                                    }
-                                }
-                                debugger::PausedReason::PromiseRejection => {
-                                    if let Some(json::Value::Object(object)) =
-                                        exception
-                                    {
-                                        object
-                                                .get("value")
-                                                .or(object.get("description"))
-                                                .map(|value| value.clone())
-                                                .or(Some(json::Value::Object(
-                                                    object,
-                                                ))).map( Exception::UnhandledPromiseRejection)
-                                    } else {
-                                        bail!("unexpected promise rejection data: {:?}", &exception)
-                                    }
-                                }
-                                debugger::PausedReason::Other => None,
-                                other => {
-                                    bail!("unexpected pause reason {:?} when in state: {:?}", other, &state)
-                                }
-                            };
-
-                            let call_frame_id = call_frame_id.ok_or(
-                                anyhow!("no call frame id at breakpoint"),
-                            )?;
-                            let browser_state = Arc::new(
-                                BrowserState::current(
-                                    context.page.clone(),
-                                    &call_frame_id,
-                                    console_entries,
-                                    exception,
-                                    &context.screenshots_directory,
-                                )
-                                .await?,
-                            );
-
-                            context.sender.send(
-                                state_machine::Event::StateChanged(
-                                    browser_state.clone(),
-                                ),
-                            )?;
-
-                            InnerState::Paused
-                        }
-                        (
-                            InnerState::Paused,
-                            InnerEvent::ActionApplied(browser_action),
-                        ) => {
-                            context
-                                .page
-                                .execute(
-                                    debugger::ResumeParams::builder().build(),
-                                )
-                                .await?;
-                            InnerState::Resuming(browser_action)
-                        }
-                        (InnerState::Running(_), InnerEvent::Resumed) => {
-                            warn!("running + resumed");
-                            InnerState::Running(vec![])
-                        }
-                        (
-                            InnerState::Resuming(browser_action),
-                            InnerEvent::Resumed,
-                        ) => {
-                            let action = browser_action.clone();
-                            let page = context.page.clone();
-                            // We can't block on running the action, in case it synchronously
-                            // throws an uncaught exception blocking the evaluation indefinitely.
-                            // This gives us a chance to receive the "Debugger.paused" event and
-                            // resume (extracting the uncaught exception information).
-                            spawn(async move {
-                                match action.apply(&page).await {
-                                    Ok(_) => {}
-                                    Err(err) => error!(
-                                        "failed to apply action {:?}: {:?}",
-                                        action, err
-                                    ),
-                                }
-                            });
-                            InnerState::Running(vec![])
-                        }
-                        (
-                            InnerState::Loading(console_entries),
-                            InnerEvent::Loaded,
-                        ) => {
-                            context
-                                .inner_events_sender
-                                .send(InnerEvent::StateRequested)?;
-                            InnerState::Running(console_entries)
-                        }
-                        (
-                            state,
-                            InnerEvent::FrameRequestedNavigation(
-                                frame_id,
-                                reason,
-                                url,
-                            ),
-                        ) => {
-                            if frame_id == context.frame_id {
-                                info!(
-                                    "navigating to {} due to {:?} (current state is {:?})",
-                                    url, reason, state
-                                );
-                                InnerState::Navigating
-                            } else {
-                                state
-                            }
-                        }
-                        (
-                            InnerState::Loading(mut console_entries),
-                            InnerEvent::ConsoleEntry(entry),
-                        ) => {
-                            console_entries.push(entry);
-                            InnerState::Loading(console_entries)
-                        }
-                        (
-                            InnerState::Running(mut console_entries),
-                            InnerEvent::ConsoleEntry(entry),
-                        ) => {
-                            console_entries.push(entry);
-                            InnerState::Running(console_entries)
-                        }
-                        (
-                            InnerState::Pausing(mut console_entries),
-                            InnerEvent::ConsoleEntry(entry),
-                        ) => {
-                            console_entries.push(entry);
-                            InnerState::Pausing(console_entries)
-                        }
-                        (
-                            InnerState::Navigating,
-                            InnerEvent::ConsoleEntry(_),
-                        ) => InnerState::Navigating,
-                        (
-                            state,
-                            InnerEvent::FrameNavigated(
-                                frame_id,
-                                navigation_type,
-                            ),
-                        ) => {
-                            if frame_id == context.frame_id {
-                                // Track all nodes.
-                                context
-                                    .page
-                                    .execute(
-                                        dom::GetDocumentParams::builder()
-                                            .depth(-1)
-                                            .pierce(false) // not through iframes and shadow roots
-                                            .build(),
-                                    )
-                                    .await?;
-
-                                match navigation_type {
-                                    NavigationType::Navigation => {
-                                        InnerState::Loading(vec![])
-                                    }
-                                    // Navigating history with bfcache doesn't yield a "loaded"
-                                    // event so we jump straight into `Running`.
-                                    NavigationType::BackForwardCacheRestore => {
-                                        context
-                                            .inner_events_sender
-                                            .send(InnerEvent::StateRequested)?;
-                                        InnerState::Running(vec![])
-                                    }
-                                }
-                            } else {
-                                state
-                            }
-                        }
-                        (state, InnerEvent::TargetDestroyed(target_id)) => {
-                            if target_id == *context.page.target_id() {
-                                bail!(
-                                    "page target {:?} was destroyed",
-                                    target_id
-                                );
-                            } else {
-                                state
-                            }
-                        }
-                        (state, event) => {
-                            bail!(
-                                "unhandled transition: {:?} + {:?}",
-                                state,
-                                event
-                            );
-                        }
-                    })
-                };
-
             let mut state_current = InnerState::Initial;
             loop {
                 match events.next().await {
                     Some(event) => {
-                        match process_event(state_current, event).await {
+                        match process_event(&context, state_current, event)
+                            .await
+                        {
                             Ok(state_new) => state_current = state_new,
                             Err(err) => {
                                 context.sender.send(
@@ -734,6 +473,221 @@ async fn run_state_machine(
         }),
     );
     Ok(())
+}
+
+async fn process_event(
+    context: &BrowserContext,
+    state_current: InnerState,
+    event: InnerEvent,
+) -> anyhow::Result<InnerState> {
+    Ok(match (state_current, event) {
+        (InnerState::Running(console_entries), InnerEvent::StateRequested) => {
+            let _ = spawn(pause(context.page.clone()));
+            InnerState::Pausing(console_entries)
+        }
+        (
+            InnerState::Running(console_entries),
+            InnerEvent::NodeTreeModified(modification),
+        ) => {
+            handle_node_modification(&context, &modification).await?;
+            let _ = spawn(pause(context.page.clone()));
+            InnerState::Pausing(console_entries)
+        }
+        (state, InnerEvent::StateRequested) => {
+            debug!(
+                "cannot request new browser state when in state {:?}, ignoring",
+                &state
+            );
+            state
+        }
+        (state, InnerEvent::NodeTreeModified(modification)) => {
+            handle_node_modification(&context, &modification).await?;
+            state
+        }
+        (
+            state,
+            InnerEvent::Paused {
+                reason,
+                exception,
+                call_frame_id,
+            },
+        ) => {
+            let console_entries = match &state {
+                InnerState::Pausing(console_entries) => console_entries.clone(),
+                InnerState::Initial => vec![],
+                InnerState::Paused => vec![],
+                InnerState::Resuming(_) => vec![],
+                InnerState::Navigating => vec![],
+                InnerState::Loading(console_entries) => console_entries.clone(),
+                InnerState::Running(console_entries) => console_entries.clone(),
+            };
+            let exception = match reason {
+                debugger::PausedReason::Exception => {
+                    if let Some(json::Value::Object(object)) = exception {
+                        object
+                            .get("description")
+                            .map(|value| value.clone())
+                            .or(Some(json::Value::Object(object)))
+                            .map(Exception::UncaughtException)
+                    } else {
+                        bail!("unexpected exception data: {:?}", &exception)
+                    }
+                }
+                debugger::PausedReason::PromiseRejection => {
+                    if let Some(json::Value::Object(object)) = exception {
+                        object
+                            .get("value")
+                            .or(object.get("description"))
+                            .map(|value| value.clone())
+                            .or(Some(json::Value::Object(object)))
+                            .map(Exception::UnhandledPromiseRejection)
+                    } else {
+                        bail!(
+                            "unexpected promise rejection data: {:?}",
+                            &exception
+                        )
+                    }
+                }
+                debugger::PausedReason::Other => None,
+                other => {
+                    bail!(
+                        "unexpected pause reason {:?} when in state: {:?}",
+                        other,
+                        &state
+                    )
+                }
+            };
+
+            let call_frame_id = call_frame_id
+                .ok_or(anyhow!("no call frame id at breakpoint"))?;
+            let browser_state = Arc::new(
+                BrowserState::current(
+                    context.page.clone(),
+                    &call_frame_id,
+                    console_entries,
+                    exception,
+                    &context.screenshots_directory,
+                )
+                .await?,
+            );
+
+            context.sender.send(state_machine::Event::StateChanged(
+                browser_state.clone(),
+            ))?;
+
+            InnerState::Paused
+        }
+        (InnerState::Paused, InnerEvent::ActionApplied(browser_action)) => {
+            context
+                .page
+                .execute(debugger::ResumeParams::builder().build())
+                .await?;
+            InnerState::Resuming(browser_action)
+        }
+        (InnerState::Running(_), InnerEvent::Resumed) => {
+            warn!("running + resumed");
+            InnerState::Running(vec![])
+        }
+        (InnerState::Resuming(browser_action), InnerEvent::Resumed) => {
+            let action = browser_action.clone();
+            let page = context.page.clone();
+            // We can't block on running the action, in case it synchronously
+            // throws an uncaught exception blocking the evaluation indefinitely.
+            // This gives us a chance to receive the "Debugger.paused" event and
+            // resume (extracting the uncaught exception information).
+            spawn(async move {
+                match action.apply(&page).await {
+                    Ok(_) => {}
+                    Err(err) => {
+                        error!("failed to apply action {:?}: {:?}", action, err)
+                    }
+                }
+            });
+            InnerState::Running(vec![])
+        }
+        (InnerState::Loading(console_entries), InnerEvent::Loaded) => {
+            context
+                .inner_events_sender
+                .send(InnerEvent::StateRequested)?;
+            InnerState::Running(console_entries)
+        }
+        (
+            state,
+            InnerEvent::FrameRequestedNavigation(frame_id, reason, url),
+        ) => {
+            if frame_id == context.frame_id {
+                info!(
+                    "navigating to {} due to {:?} (current state is {:?})",
+                    url, reason, state
+                );
+                InnerState::Navigating
+            } else {
+                state
+            }
+        }
+        (
+            InnerState::Loading(mut console_entries),
+            InnerEvent::ConsoleEntry(entry),
+        ) => {
+            console_entries.push(entry);
+            InnerState::Loading(console_entries)
+        }
+        (
+            InnerState::Running(mut console_entries),
+            InnerEvent::ConsoleEntry(entry),
+        ) => {
+            console_entries.push(entry);
+            InnerState::Running(console_entries)
+        }
+        (
+            InnerState::Pausing(mut console_entries),
+            InnerEvent::ConsoleEntry(entry),
+        ) => {
+            console_entries.push(entry);
+            InnerState::Pausing(console_entries)
+        }
+        (InnerState::Navigating, InnerEvent::ConsoleEntry(_)) => {
+            InnerState::Navigating
+        }
+        (state, InnerEvent::FrameNavigated(frame_id, navigation_type)) => {
+            if frame_id == context.frame_id {
+                // Track all nodes.
+                context
+                    .page
+                    .execute(
+                        dom::GetDocumentParams::builder()
+                            .depth(-1)
+                            .pierce(false) // not through iframes and shadow roots
+                            .build(),
+                    )
+                    .await?;
+
+                match navigation_type {
+                    NavigationType::Navigation => InnerState::Loading(vec![]),
+                    // Navigating history with bfcache doesn't yield a "loaded"
+                    // event so we jump straight into `Running`.
+                    NavigationType::BackForwardCacheRestore => {
+                        context
+                            .inner_events_sender
+                            .send(InnerEvent::StateRequested)?;
+                        InnerState::Running(vec![])
+                    }
+                }
+            } else {
+                state
+            }
+        }
+        (state, InnerEvent::TargetDestroyed(target_id)) => {
+            if target_id == *context.page.target_id() {
+                bail!("page target {:?} was destroyed", target_id);
+            } else {
+                state
+            }
+        }
+        (state, event) => {
+            bail!("unhandled transition: {:?} + {:?}", state, event);
+        }
+    })
 }
 
 async fn handle_node_modification(
