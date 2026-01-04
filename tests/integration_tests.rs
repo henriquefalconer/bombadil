@@ -13,6 +13,16 @@ enum Expect {
     Success,
 }
 
+/// Run a named browser test with a given expectation.
+///
+/// Spins up two web servers: one on a random port P, and one on port P + 1, in order to
+/// facitiliate multi-domain tests.
+///
+/// The test starts at:
+///
+///     http://localhost:{P}/tests/{name}.
+///
+/// Which means that every named test case directory should have an index.html file.
 async fn run_browser_test(name: &str, expect: Expect, timeout: Duration) {
     let app = Router::new().fallback_service(ServeDir::new("./tests"));
     let app_other = app.clone();
