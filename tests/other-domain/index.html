@@ -1,0 +1,15 @@
+<html>
+  <head>
+    <title>First Domain</title>
+  </head>
+  <body>
+      <button>Click me</button>
+      <script>
+        function switch_domain() {
+          const port = parseInt(window.location.port);
+          window.location = `http://localhost:${port + 1}/other-domain/other-a.html`
+        }
+        document.querySelector("button").addEventListener("click", switch_domain);
+        </script>
+  </body>
+</html>

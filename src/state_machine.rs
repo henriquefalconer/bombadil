@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -11,9 +12,14 @@ pub trait StateMachine {
     type State;
     type Action;
 
-    async fn initiate(&mut self) -> anyhow::Result<()>;
-    async fn terminate(&mut self) -> anyhow::Result<()>;
-    async fn next_event(&mut self) -> Option<Event<Self::State>>;
-    async fn request_state(&mut self);
-    async fn apply(&mut self, action: Self::Action) -> anyhow::Result<()>;
+    fn initiate(&mut self) -> impl Future<Output = Result<()>>;
+    fn terminate(&mut self) -> impl Future<Output = Result<()>>;
+    fn next_event(
+        &mut self,
+    ) -> impl Future<Output = Option<Event<Self::State>>>;
+    fn request_state(&mut self) -> impl Future<Output = ()>;
+    fn apply(
+        &mut self,
+        action: Self::Action,
+    ) -> impl Future<Output = Result<()>>;
 }

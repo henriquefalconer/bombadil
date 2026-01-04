@@ -7,11 +7,13 @@ use include_dir::{include_dir, Dir};
 use serde::Serialize;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json as json;
+use url::Url;
 
 use crate::browser::keys::key_name;
 use crate::browser::state::BrowserState;
 use crate::geometry::Point;
 use crate::tree::{Tree, Weight};
+use crate::url::is_within_domain;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BrowserActionCandidate {
@@ -205,21 +207,24 @@ async fn run_actions_script(
 }
 
 pub async fn available_actions(
+    origin: &Url,
     state: &BrowserState,
 ) -> Result<Tree<(BrowserActionCandidate, Timeout)>> {
+    if state.content_type != "text/html"
+        || !is_within_domain(&state.url, origin)
+    {
+        return Ok(Tree::Leaf((
+            BrowserActionCandidate::Back,
+            Timeout::from_secs(2),
+        )));
+    }
+
     let tree = Tree::Branch(vec![
         (Tree::Branch(run_actions_script(state, "clicks").await?)),
         (Tree::Branch(run_actions_script(state, "inputs").await?)),
         (Tree::Branch(run_actions_script(state, "scrolls").await?)),
     ])
     .prune();
-
-    if state.content_type != "text/html" {
-        return Ok(Tree::Leaf((
-            BrowserActionCandidate::Back,
-            Timeout::from_secs(2),
-        )));
-    }
 
     if let Some(tree) = tree {
         Ok(tree)

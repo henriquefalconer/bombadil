@@ -15,7 +15,7 @@ use tokio::time::timeout;
 use crate::browser::state::{BrowserState, ConsoleEntryLevel, Exception};
 use crate::browser::{Browser, BrowserOptions};
 
-pub async fn run(browser: &mut Browser) -> anyhow::Result<()> {
+pub async fn run(origin: &Url, browser: &mut Browser) -> anyhow::Result<()> {
     let mut rng = rand::rng();
     let mut last_action_timeout = Timeout::from_secs(1);
     loop {
@@ -27,7 +27,7 @@ pub async fn run(browser: &mut Browser) -> anyhow::Result<()> {
                     // very basic check until we have spec language and all that
                     check_page_ok(&state).await?;
 
-                    let actions = available_actions(&state).await?;
+                    let actions = available_actions(origin, &state).await?;
 
                     #[cfg(feature = "hegel")]
                     let action = hegel::pick_action(actions);
@@ -63,10 +63,10 @@ pub async fn run_test(
     browser_options: BrowserOptions,
 ) -> anyhow::Result<()> {
     info!("testing {}", &origin);
-    let mut browser = Browser::new(origin, browser_options).await?;
+    let mut browser = Browser::new(origin.clone(), browser_options).await?;
 
     browser.initiate().await?;
-    let result = run(&mut browser).await;
+    let result = run(&origin, &mut browser).await;
     browser.terminate().await?;
 
     result

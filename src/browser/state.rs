@@ -15,6 +15,7 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
+use url::Url;
 
 use crate::browser::evaluation::{
     evaluate_expression_in_debugger, evaluate_function_call_in_debugger,
@@ -25,7 +26,7 @@ pub struct BrowserState {
     page: Arc<Page>,
     call_frame_id: CallFrameId,
 
-    pub url: String,
+    pub url: Url,
     pub title: String,
     pub content_type: String,
     pub console_entries: Vec<ConsoleEntry>,
@@ -62,12 +63,14 @@ impl BrowserState {
         exception: Option<Exception>,
         screenshots_directory: &Path,
     ) -> anyhow::Result<Self> {
-        let url: String = evaluate_expression_in_debugger(
-            &page,
-            call_frame_id,
-            "window.location.href",
-        )
-        .await?;
+        let url = Url::parse(
+            &evaluate_expression_in_debugger::<String>(
+                &page,
+                call_frame_id,
+                "window.location.href",
+            )
+            .await?,
+        )?;
 
         let title: String = evaluate_expression_in_debugger(
             &page,
