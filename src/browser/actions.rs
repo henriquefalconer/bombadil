@@ -7,6 +7,7 @@ use include_dir::{include_dir, Dir};
 use serde::Serialize;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json as json;
+use tokio::time::sleep;
 use url::Url;
 
 use crate::browser::keys::key_name;
@@ -55,6 +56,7 @@ pub enum BrowserAction {
     },
     TypeText {
         text: String,
+        delay: Duration,
     },
     PressKey {
         code: u8,
@@ -134,9 +136,11 @@ impl BrowserAction {
             BrowserAction::Click { point, .. } => {
                 page.click((*point).into()).await?;
             }
-            BrowserAction::TypeText { text } => {
-                // TODO: maybe dispatch key presses instead with some random timing inbetween
-                page.execute(input::InsertTextParams::new(text)).await?;
+            BrowserAction::TypeText { text, delay } => {
+                for char in text.chars() {
+                    sleep(*delay).await;
+                    page.execute(input::InsertTextParams::new(char)).await?;
+                }
             }
             BrowserAction::PressKey { code } => {
                 let build_params = |event_type| {

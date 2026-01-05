@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use url::Url;
 
 pub fn is_within_domain(uri: &Url, domain: &Url) -> bool {
-    dbg!((uri.host(), uri.port(), domain.host(), domain.port()));
     (uri.host().is_none() || uri.host() == domain.host())
         && (uri.port().is_none() || uri.port() == domain.port())
 }

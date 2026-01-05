@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::browser::actions::{BrowserAction, BrowserActionCandidate, Timeout};
 use crate::tree::Tree;
 use rand::{
@@ -23,8 +25,10 @@ pub fn generate_action<R: rand::Rng>(
         },
         BrowserActionCandidate::TypeText { .. } => {
             let length = rng.random_range(1..16);
+            let delay = Duration::from_millis(rng.random_range(10..200));
             BrowserAction::TypeText {
                 text: Alphanumeric.sample_string(rng, length),
+                delay,
             }
         }
         BrowserActionCandidate::PressKey => {
