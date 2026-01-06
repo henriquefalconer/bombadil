@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use ::url::Url;
 use anyhow::Result;
 use clap::Parser;
@@ -15,7 +17,7 @@ struct CLI {
 #[derive(clap::Subcommand)]
 enum Command {
     Test {
-        origin: Url,
+        origin: Origin,
         #[arg(long)]
         seed: Option<String>,
         #[arg(long, default_value_t = false)]
@@ -25,6 +27,21 @@ enum Command {
         #[arg(long, default_value_t = 768)]
         height: u16,
     },
+}
+
+#[derive(Clone)]
+struct Origin {
+    url: Url,
+}
+
+impl FromStr for Origin {
+    type Err = url::ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Url::parse(s)
+            .or(Url::parse(&format!("file://{s}")))
+            .map(|url| Origin { url })
+    }
 }
 
 #[tokio::main]
@@ -45,7 +62,7 @@ async fn main() -> Result<()> {
             let user_data_directory = TempDir::new()?;
 
             match run_test(
-                origin,
+                origin.url,
                 BrowserOptions {
                     headless,
                     user_data_directory: user_data_directory
