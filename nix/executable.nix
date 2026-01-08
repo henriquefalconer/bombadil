@@ -1,24 +1,21 @@
 {
+  callPackage,
   rustPlatform,
   pkg-config,
-  gitignoreSource,
   esbuild,
   chromium,
 }:
-rustPlatform.buildRustPackage rec {
-  pname = "antithesis_browser";
-  version = "0.1.0";
-
-  src = gitignoreSource ../.;
-
-  buildInputs = [ ];
-  nativeBuildInputs = [
-    pkg-config
-    esbuild
-    chromium
-  ];
-  cargoLock = {
-    lockFile = ../Cargo.lock;
-  };
-  cargoTestFlags = "--bin antithesis_browser";
-}
+let
+  customBuildRustCrateForPkgs =
+    pkgs:
+    pkgs.buildRustCrate.override {
+      defaultCrateOverrides = pkgs.defaultCrateOverrides // {
+        antithesis_browser = attrs: {
+          nativeBuildInputs = [ esbuild ];
+        };
+      };
+    };
+in
+(callPackage ./Cargo.nix {
+  buildRustCrateForPkgs = customBuildRustCrateForPkgs;
+}).rootCrate.build

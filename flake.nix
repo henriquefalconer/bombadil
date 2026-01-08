@@ -29,7 +29,7 @@
       in
       {
         packages = {
-          default = pkgs.callPackage ./nix/executable.nix { inherit gitignoreSource; };
+          default = pkgs.callPackage ./nix/executable.nix { };
         };
 
         devShells = {
@@ -47,6 +47,7 @@
               typescript
               typescript-language-server
               esbuild
+              crate2nix
             ];
           };
         };
