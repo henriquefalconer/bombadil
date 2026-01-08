@@ -30,6 +30,7 @@
       {
         packages = {
           default = pkgs.callPackage ./nix/executable.nix { };
+          docker = pkgs.callPackage ./nix/docker.nix { };
         };
 
         devShells = {

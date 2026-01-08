@@ -22,6 +22,22 @@ See debug logs:
 RUST_LOG=antithesis_browser=debug cargo run -- test https://example.com --headless
 ```
 
+## Running in podman
+
+Build and tag the image:
+
+```bash
+nix build ".#docker" \
+    && podman load < result \
+    && podman tag localhost/antithesis_browser_docker:$(nix eval --raw '.#packages.x86_64-linux.docker.imageTag') localhost/antithesis_browser_docker:latest
+```
+
+Run it:
+
+```bash
+podman run -ti localhost/antithesis_browser_docker:latest <SOME_URL>
+```
+
 ## Development
 
 ### Integration tests

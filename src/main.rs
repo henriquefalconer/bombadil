@@ -22,8 +22,8 @@ enum Command {
         seed: Option<String>,
         #[arg(long, default_value_t = false)]
         headless: bool,
-        #[arg(long, default_value_t = true)]
-        sandbox: bool,
+        #[arg(long, default_value_t = false)]
+        no_sandbox: bool,
         #[arg(long, default_value_t = 1024)]
         width: u16,
         #[arg(long, default_value_t = 768)]
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
             headless,
             width,
             height,
-            sandbox,
+            no_sandbox,
         } => {
             let user_data_directory = TempDir::new()?;
             let browser_options = BrowserOptions {
@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
                 user_data_directory: user_data_directory.path().to_path_buf(),
                 width,
                 height,
-                sandbox,
+                no_sandbox,
             };
 
             match run_test(origin.url, &browser_options).await {

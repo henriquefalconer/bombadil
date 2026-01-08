@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
+use tempfile::TempDir;
 use tokio::spawn;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::{channel, Receiver, Sender};
@@ -97,7 +98,7 @@ pub struct BrowserOptions {
     pub user_data_directory: PathBuf,
     pub width: u16,
     pub height: u16,
-    pub sandbox: bool,
+    pub no_sandbox: bool,
 }
 
 pub struct Browser {
@@ -737,12 +738,13 @@ fn remote_object_to_json(object: &runtime::RemoteObject) -> json::Value {
 fn browser_options_to_config(
     browser_options: &BrowserOptions,
 ) -> Result<BrowserConfig> {
+    let crash_dumps_dir = TempDir::new()?;
     let apply_sandbox =
         |builder: BrowserConfigBuilder| -> BrowserConfigBuilder {
-            if browser_options.sandbox {
-                builder
-            } else {
+            if browser_options.no_sandbox {
                 builder.no_sandbox()
+            } else {
+                builder
             }
         };
     apply_sandbox(BrowserConfig::builder())
@@ -756,6 +758,18 @@ fn browser_options_to_config(
             browser_options.height as u32,
         )
         .user_data_dir(browser_options.user_data_directory.clone())
+        .args([
+            "--disable-crash-reporter",
+            &format!(
+                "--crash-dumps-dir={}",
+                crash_dumps_dir
+                    .path()
+                    .to_path_buf()
+                    .to_str()
+                    .expect("invalid tmp dir path")
+            ),
+            "--no-crashpad",
+        ])
         .build()
         .map_err(|s| anyhow!(s))
 }
