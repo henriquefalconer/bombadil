@@ -88,7 +88,7 @@ async fn main() -> Result<()> {
             {
                 Ok(()) => Ok(()),
                 Err(error) => {
-                    eprintln!("Test failed: {}", error);
+                    eprintln!("{}", error);
                     std::process::exit(2);
                 }
             }
