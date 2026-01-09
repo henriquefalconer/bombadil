@@ -54,7 +54,8 @@ impl FromStr for Origin {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::builder()
+    let env = env_logger::Env::default().default_filter_or("info");
+    env_logger::Builder::from_env(env)
         .format_timestamp_millis()
         .format_target(true)
         .init();

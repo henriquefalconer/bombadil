@@ -742,7 +742,10 @@ fn browser_options_to_config(
     let apply_sandbox =
         |builder: BrowserConfigBuilder| -> BrowserConfigBuilder {
             if browser_options.no_sandbox {
-                builder.no_sandbox()
+                builder.no_sandbox().args([
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                ])
             } else {
                 builder
             }
@@ -759,7 +762,6 @@ fn browser_options_to_config(
         )
         .user_data_dir(browser_options.user_data_directory.clone())
         .args([
-            "--disable-crash-reporter",
             &format!(
                 "--crash-dumps-dir={}",
                 crash_dumps_dir
@@ -769,6 +771,7 @@ fn browser_options_to_config(
                     .expect("invalid tmp dir path")
             ),
             "--no-crashpad",
+            "--disable-crash-reporter",
         ])
         .build()
         .map_err(|s| anyhow!(s))
