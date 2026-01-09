@@ -12,7 +12,15 @@ use tokio::time::timeout;
 use crate::browser::state::{BrowserState, ConsoleEntryLevel, Exception};
 use crate::browser::{Browser, BrowserOptions};
 
-pub async fn run(origin: &Url, browser: &mut Browser) -> Result<()> {
+pub struct RunnerOptions {
+    pub exit_on_violation: bool,
+}
+
+pub async fn run(
+    origin: &Url,
+    runner_options: &RunnerOptions,
+    browser: &mut Browser,
+) -> Result<()> {
     let mut rng = rand::rng();
     let mut last_action_timeout = Timeout::from_secs(1);
     loop {
@@ -24,7 +32,13 @@ pub async fn run(origin: &Url, browser: &mut Browser) -> Result<()> {
                     // very basic check until we have spec language and all that
                     match check_page_ok(&state).await {
                         Ok(_) => {}
-                        Err(error) => error!("violation: {}", error),
+                        Err(error) => {
+                            if runner_options.exit_on_violation {
+                                bail!("violation: {}", error);
+                            } else {
+                                error!("violation: {}", error);
+                            }
+                        }
                     }
 
                     let actions = available_actions(origin, &state).await?;
@@ -55,13 +69,14 @@ pub async fn run(origin: &Url, browser: &mut Browser) -> Result<()> {
 
 pub async fn run_test(
     origin: Url,
+    runner_options: &RunnerOptions,
     browser_options: &BrowserOptions,
 ) -> Result<()> {
     info!("testing {}", &origin);
     let mut browser = Browser::new(origin.clone(), browser_options).await?;
 
     browser.initiate().await?;
-    let result = run(&origin, &mut browser).await;
+    let result = run(&origin, runner_options, &mut browser).await;
     browser.terminate().await?;
 
     result

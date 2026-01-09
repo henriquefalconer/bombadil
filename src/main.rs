@@ -5,7 +5,10 @@ use anyhow::Result;
 use clap::Parser;
 use tempfile::TempDir;
 
-use antithesis_browser::{browser::BrowserOptions, runner::run_test};
+use antithesis_browser::{
+    browser::BrowserOptions,
+    runner::{run_test, RunnerOptions},
+};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -28,6 +31,8 @@ enum Command {
         width: u16,
         #[arg(long, default_value_t = 768)]
         height: u16,
+        #[arg(long, default_value_t = false)]
+        exit_on_violation: bool,
     },
 }
 
@@ -68,8 +73,10 @@ async fn main() -> Result<()> {
             width,
             height,
             no_sandbox,
+            exit_on_violation,
         } => {
             let user_data_directory = TempDir::new()?;
+            let runner_options = RunnerOptions { exit_on_violation };
             let browser_options = BrowserOptions {
                 headless,
                 user_data_directory: user_data_directory.path().to_path_buf(),
@@ -77,8 +84,8 @@ async fn main() -> Result<()> {
                 height,
                 no_sandbox,
             };
-
-            match run_test(origin.url, &browser_options).await {
+            match run_test(origin.url, &runner_options, &browser_options).await
+            {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     eprintln!("Test failed: {}", error);
