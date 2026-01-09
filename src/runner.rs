@@ -5,7 +5,7 @@ use crate::browser::random;
 use crate::state_machine::{self, StateMachine};
 use ::url::Url;
 use anyhow::{bail, Result};
-use log::{debug, info};
+use log::{debug, error, info};
 use serde_json as json;
 use tokio::time::timeout;
 
@@ -22,7 +22,10 @@ pub async fn run(origin: &Url, browser: &mut Browser) -> Result<()> {
             Ok(Some(event)) => match event {
                 state_machine::Event::StateChanged(state) => {
                     // very basic check until we have spec language and all that
-                    check_page_ok(&state).await?;
+                    match check_page_ok(&state).await {
+                        Ok(_) => {}
+                        Err(error) => error!("violation: {}", error),
+                    }
 
                     let actions = available_actions(origin, &state).await?;
                     let action = random::pick_action(&mut rng, actions);
