@@ -57,7 +57,7 @@ pub fn instrument_source_code(
     let program_codegen = Codegen::new().build(&program);
 
     let code = format!(
-        "window.{NAMESPACE} = window.{NAMESPACE} || {{ {COVERAGE_MAP}: new Uint8Array({SIZE_BYTES}), {LOCATION_PREVIOUS} = 0 }};\n{}",
+        "window.{NAMESPACE} = window.{NAMESPACE} || {{ {COVERAGE_MAP}: new Uint8Array({SIZE_BYTES}), {LOCATION_PREVIOUS}: 0 }};\n{}",
         program_codegen.code
     );
     return Ok(code);
