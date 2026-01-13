@@ -324,6 +324,15 @@ impl<'a> Traverse<'a, ()> for Instrumenter {
     ) {
         self.insert_coverage_hook(ctx, &mut statement.body);
     }
+
+    fn exit_switch_case(
+        &mut self,
+        node: &mut ast::SwitchCase<'a>,
+        ctx: &mut TraverseCtx<'a, ()>,
+    ) {
+        let statements = self.coverage_hooks(ctx);
+        node.consequent.splice(0..0, statements);
+    }
 }
 
 #[cfg(test)]
@@ -410,6 +419,34 @@ mod tests {
             }
             console.log(example(true, 1, 2), x, y, z);
         "#;
+
+        let code =
+            instrument_source_code(SourceId(0), source_text, SourceType::cjs())
+                .unwrap();
+        assert_snapshot!(code);
+    }
+
+    #[test]
+    fn test_instrument_source_code_switch() {
+        let source_text = r#"
+            function foo() {
+                let bar = get();
+                while (true) {
+                    switch (bar) {
+                        case 1:
+                            return bar;
+                        case 2:
+                            break;
+                        case "foo":
+                        case "bar":
+                        case "baz":
+                            continue;
+                        default:
+                            return no;
+                    }
+                }
+            }
+            "#;
 
         let code =
             instrument_source_code(SourceId(0), source_text, SourceType::cjs())
