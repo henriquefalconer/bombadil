@@ -21,6 +21,7 @@ with open(trace_file) as f:
         t = json.loads(line)
         trace.append(
             {
+                "url": t.get("url"),
                 "prev": t.get("hash_previous"),
                 "curr": t.get("hash_current"),
                 "screenshot": t.get("screenshot_path"),
@@ -118,8 +119,8 @@ for t in trace:
 
 # ---------- weighted clustering ----------
 coverage_weight = 1.0
-url_weight = 3.0
-THRESHOLD = 6  # adjust as needed
+url_weight = 5.0
+THRESHOLD = 8  # adjust as needed
 
 
 def combined_distance(a, b):
@@ -172,10 +173,7 @@ for t in trace:
     first_hash = t.get("prev") or t.get("curr")
     if first_hash is not None:
         break
-
 first_cluster = hash_to_cluster[first_hash]
-
-print(f"first cluster is {first_cluster}")
 
 
 # ---------- screenshots per hash ----------
@@ -247,7 +245,7 @@ def summarize_action(action):
         content = data.get("content")
         return f"Click({content})" if content else f"Click({name})"
     if variant == "TypeText":
-        return f'Type("{data.get("text","")}")'
+        return f"Type"
     if variant == "PressKey":
         return f"Key({data.get('code')})"
     return variant
@@ -265,18 +263,18 @@ for t in trace:
         continue
     ci = hash_to_cluster[prev_hash]
     cj = hash_to_cluster[curr_hash]
-    if ci != cj:
-        key = (ci, cj)
-        if key not in seen:
-            edges.append(
-                {
-                    "id": f"e{ci}_{cj}",
-                    "sources": [str(ci)],
-                    "targets": [str(cj)],
-                    "label": summarize_action(t.get("action")),
-                }
-            )
-            seen.add(key)
+    label = summarize_action(t.get("action"))
+    key = (ci, cj, label)
+    if key not in seen:
+        edges.append(
+            {
+                "id": f"e{ci}_{cj}",
+                "sources": [str(ci)],
+                "targets": [str(cj)],
+                "label": label,
+            }
+        )
+        seen.add(key)
     last_hash = curr_hash
 
 # ---------- ELK graph ----------
@@ -285,10 +283,11 @@ elk_graph = {
     "layoutOptions": {
         "elk.algorithm": "layered",
         "elk.direction": "RIGHT",
-        "elk.layered.spacing.nodeNodeBetweenLayers": "120",
-        "elk.spacing.nodeNode": "80",
+        "elk.layered.spacing.nodeNodeBetweenLayers": "200",
+        "elk.spacing.nodeNode": "160",
         "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
         "elk.edgeRouting": "ORTHOGONAL",
+        "elk.layered.nodePlacement.strategy": "INTERACTIVE",
     },
     "children": [
         {
@@ -466,28 +465,50 @@ elk.layout(elkGraph).then(layout => {{
       const pts = [s.startPoint, ...(s.bendPoints || []), s.endPoint];
   
       // Edge path
-      edgeGroup.append("path")
+      edgeGroup.selectAll(".edge-path")
+        .data(layout.edges.flatMap(e => e.sections.map(s => ({{ edge: e, section: s }}))))
+        .enter()
+        .append("path")
         .attr("class", "edge-path")
+        .attr("data-source", d => d.edge.sources[0].toString())
+        .attr("data-target", d => d.edge.targets[0].toString())
         .attr("marker-end", "url(#arrowhead)")
-        .attr("d", d3.line().x(p=>p.x).y(p=>p.y)(pts));
+        .attr("d", d => {{
+          const points = [d.section.startPoint, ...(d.section.bendPoints || []), d.section.endPoint];
+          return d3.line().x(p => p.x).y(p => p.y)(points);
+        }});
   
       // Edge label
       if (e.label) {{
-        // compute midpoint for label
         const start = pts[0];
-        const end = pts[pts.length-1];
-        const mid = {{ x: (start.x+end.x)/2, y: (start.y+end.y)/2 }};
+        const end = pts[pts.length - 1];
 
-        // offset in x-direction based on edge direction
-        const offsetX = (end.x > start.x) ? -10 : 10;  // push left if arrow goes right
-        const offsetY = (end.y > start.y) ? -10 : 10;  // optional vertical adjustment
+        let x, y, anchor, baseline;
+        if (e.sources[0] === e.targets[0]) {{
+            // Self-loop: place label above the loop
+            x = start.x;                      // center horizontally
+            y = start.y - 20;                 // 20px above the node (adjust as needed)
+            anchor = "middle";                // center the text
+            baseline = "auto";
+        }} else {{
+            // Normal edge: align based on direction
+            anchor = end.x < start.x ? "start" : "end";
+            const offset = anchor === "start" ? 6 : -6;
+            x = end.x + offset;
+            y = end.y;
+            baseline = "middle";
+        }}
 
         edgeGroup.append("text")
           .attr("class","edge-label")
-          .attr("x", mid.x + offsetX)
-          .attr("y", mid.y + offsetY)
-          .attr("text-anchor","middle")
+          .attr("data-source", e.sources[0].toString())
+          .attr("data-target", e.targets[0].toString())
+          .attr("x", x)
+          .attr("y", y)
+          .attr("text-anchor", anchor)
+          .attr("dominant-baseline", baseline)
           .text(e.label);
+
       }}
      }});
   }});
@@ -519,6 +540,57 @@ elk.layout(elkGraph).then(layout => {{
     .attr("x", d => d.width/2)
     .attr("y", d => d.height - 10)
     .text(d => d.label);
+
+  const padding = 2;
+  edgeGroup.selectAll("text").each(function() {{
+    const text = d3.select(this);        // current text element
+    const bbox = text.node().getBBox();  // bounding box of this text
+  
+    // Insert rect behind the text
+    d3.select(this.parentNode)            // insert inside same group
+      .insert("rect", function() {{ return text.node(); }}) // insert before this text
+      .attr("class", "edge-bg")
+      .attr("x", bbox.x - padding)
+      .attr("y", bbox.y - padding)
+      .attr("width", bbox.width + padding*2)
+      .attr("height", bbox.height + padding*2)
+      .style("fill", "black")
+      .style("opacity", "0.5");
+  }});
+
+  nodes
+    .on("mouseover", function(event, d) {{
+      const cid = d.id;
+  
+      // highlight only edges connected to this node
+      edgeGroup.selectAll(".edge-path")
+        .style("opacity", e => {{
+          return (e.edge.sources[0] === cid || e.edge.targets[0] === cid) ? 1 : 0.2;
+        }});
+
+      // labels
+      edgeGroup.selectAll(".edge-label")
+        .style("opacity", function(l) {{
+          // get the dataset attributes from the DOM element
+          const source = this.dataset.source;
+          const target = this.dataset.target;
+          return (source === cid || target === cid) ? 1 : 0.2;
+      }});
+  
+      // optionally dim other nodes too
+      nodes.style("opacity", n => (n.id === cid ? 1 : 0.5));
+    }})
+    .on("mouseout", function() {{
+      // reset opacity
+      edgeGroup.selectAll(".edge-path")
+        .style("opacity", 1)
+        .style("stroke-width", 2);
+
+      edgeGroup.selectAll(".edge-label")
+        .style("opacity", 1);
+  
+      nodes.style("opacity", 1);
+    }});
 
   const bbox = g.node().getBBox();
   const scale = Math.min(innerWidth/bbox.width, innerHeight/bbox.height)*0.9;
