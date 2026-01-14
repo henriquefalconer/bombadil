@@ -47,9 +47,6 @@ pub const EDGES_PREVIOUS: &'static str = "edges_previous";
 pub const EDGES_CURRENT: &'static str = "edges_current";
 pub const EDGE_MAP_SIZE: usize = 64 * 1024;
 
-pub const BRANCHES_CURRENT: &'static str = "branches_current";
-pub const BRANCH_MAP_SIZE: usize = 64 * 1024;
-
 const LOCATION_PREVIOUS: &'static str = "previous";
 
 const PRELUDE: &'static str = str_replace!(
@@ -57,7 +54,6 @@ const PRELUDE: &'static str = str_replace!(
         "window.{NAMESPACE} = window.{NAMESPACE} || {{
             {EDGES_PREVIOUS}: new Uint8Array({EDGE_MAP_SIZE}),
             {EDGES_CURRENT}: new Uint8Array({EDGE_MAP_SIZE}),
-            {BRANCHES_CURRENT}: new Uint8Array({BRANCH_MAP_SIZE}),
             {LOCATION_PREVIOUS}: 0,
         }};"
     ),
@@ -216,45 +212,9 @@ impl<'a> Instrumenter {
             ),
         );
 
-        let branch_index = ctx.ast.expression_binary(
-            SPAN,
-            branch_id.clone_in_with_semantic_ids(ctx.ast.allocator),
-            ast::BinaryOperator::Remainder,
-            ctx.ast.expression_numeric_literal(
-                SPAN,
-                (64 * 1024u32) as f64,
-                None,
-                ast::NumberBase::Decimal,
-            ),
-        );
-
-        let branch_addition: Statement = ctx.ast.statement_expression(
-            SPAN,
-            ctx.ast.expression_assignment(
-                SPAN,
-                AssignmentOperator::Addition,
-                AssignmentTarget::ComputedMemberExpression(
-                    ctx.ast.alloc_computed_member_expression(
-                        SPAN,
-                        antithesis_member(BRANCHES_CURRENT).into(),
-                        branch_index,
-                        false,
-                    ),
-                ),
-                ctx.ast.expression_numeric_literal(
-                    SPAN,
-                    1.0,
-                    None,
-                    ast::NumberBase::Decimal,
-                ),
-            ),
-        );
-
-        return ctx.ast.vec_from_array([
-            edge_addition,
-            location_previous_update,
-            branch_addition,
-        ]);
+        return ctx
+            .ast
+            .vec_from_array([edge_addition, location_previous_update]);
     }
 
     /// Adds the following two statements to the start of block, or wraps a single statement
