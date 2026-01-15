@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
                             trace_file.write_u8(b'\n').await?;
 
                             if let Some(hash) = entry.hash_current {
-                                log::info!("got new transition hash: {:?}", hash);
+                                log::debug!("got new transition hash: {:?}", hash);
                             };
 
                             if let Some(violation) = violation {
