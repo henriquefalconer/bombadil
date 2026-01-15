@@ -239,7 +239,7 @@ impl state_machine::StateMachine for Browser {
         let Browser {
             shutdown_sender,
             done_receiver,
-            mut browser,
+            browser,
             ..
         } = self;
         if let Ok(()) = shutdown_sender.send(()) {
@@ -248,10 +248,11 @@ impl state_machine::StateMachine for Browser {
         } else {
             log::warn!("couldn't send shutdown signal and receive done signal, killing browser anyway...");
         }
-        browser.close().await?;
-        if let Some(exit_code) = browser.wait().await? {
-            log::info!("browser exited with code {}", exit_code)
-        }
+        // For some reason browser.close() logs an error about the websocket connection, so we rely
+        // on drop (explicit here so that it's clear) cleaning up the Chrome process.
+        //
+        // Reported here: https://github.com/mattsse/chromiumoxide/issues/287
+        drop(browser);
         log::info!("terminate end");
         Ok(())
     }
