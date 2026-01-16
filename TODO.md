@@ -10,6 +10,9 @@
         unexpected error: state machine error: process_event: unhandled transition: Navigating + Loaded
         note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
         ```
+    * "quiescence checker": debounce outbound network request events and DOM update events and
+      trigger a new state once settled (as opposed to fixed timeouts after actions), with some max
+      timeout too to avoid getting stuck
 * proxy
     * instrument inline scripts in html?
         * see riotjs example in todomvc!
