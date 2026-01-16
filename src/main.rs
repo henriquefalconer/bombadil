@@ -1,7 +1,10 @@
 use ::url::Url;
 use anyhow::Result;
 use clap::Parser;
-use std::str::FromStr;
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 use tempfile::TempDir;
 
 use antithesis_browser::{
@@ -34,6 +37,8 @@ enum Command {
         height: u16,
         #[arg(long, default_value_t = false)]
         exit_on_violation: bool,
+        #[arg(long)]
+        output_path: Option<PathBuf>,
     },
     Proxy {
         #[arg(long)]
@@ -81,11 +86,14 @@ async fn main() -> Result<()> {
             height,
             no_sandbox,
             exit_on_violation,
+            output_path,
         } => {
-            let user_data_directory = TempDir::with_prefix("user_data_")?;
-            // TODO: make this configurable with CLI option
-            let trace_directory = TempDir::with_prefix("states_")?.keep();
+            let output_path = match output_path {
+                Some(path) => path,
+                None => TempDir::with_prefix("states_")?.keep().to_path_buf(),
+            };
 
+            let user_data_directory = TempDir::with_prefix("user_data_")?;
             let browser_options = BrowserOptions {
                 headless,
                 user_data_directory: user_data_directory.path().to_path_buf(),
@@ -103,7 +111,7 @@ async fn main() -> Result<()> {
             )
             .await?;
             let mut events = runner.start();
-            let mut writer = TraceWriter::initialize(trace_directory).await?;
+            let mut writer = TraceWriter::initialize(output_path).await?;
 
             let exit_code: anyhow::Result<Option<i32>> = async {
                 loop {

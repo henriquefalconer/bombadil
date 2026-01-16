@@ -23,13 +23,13 @@ impl TraceWriter {
                 .to_str()
                 .expect("states directory path is not valid unicode")
         );
+        let screenshots_path = root_path.join("screenshots");
+        tokio::fs::create_dir_all(&screenshots_path).await?;
         let trace_file = File::options()
             .append(true)
             .create(true)
             .open(root_path.join("trace.jsonl"))
             .await?;
-        let screenshots_path = root_path.join("screenshots");
-        tokio::fs::create_dir_all(&screenshots_path).await?;
         Ok(TraceWriter {
             screenshots_path,
             trace_file,
