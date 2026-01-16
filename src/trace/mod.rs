@@ -1,29 +1,32 @@
-use std::{fmt::Display, sync::Arc, time::SystemTime};
+use std::{fmt::Display, path::PathBuf, time::SystemTime};
 
 use serde::Serialize;
 use url::Url;
 
-use crate::browser::{actions::BrowserAction, state};
+use crate::browser::actions::BrowserAction;
+
+pub mod writer;
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TraceEntry<Screenshot = state::Screenshot> {
+pub struct TraceEntry {
     pub timestamp: SystemTime,
     pub url: Url,
     pub hash_previous: Option<u64>,
     pub hash_current: Option<u64>,
     pub action: Option<BrowserAction>,
-    pub screenshot: Screenshot,
+    pub screenshot: PathBuf,
+    pub violation: Option<Violation>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum Violation {
     Invariant(String),
-    Unknown(Arc<anyhow::Error>),
+    Unknown(String),
 }
 
 impl<E: Into<anyhow::Error>> From<E> for Violation {
     fn from(value: E) -> Self {
-        Violation::Unknown(Arc::new(value.into()))
+        Violation::Unknown(value.into().to_string())
     }
 }
 

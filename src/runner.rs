@@ -4,7 +4,7 @@ use crate::instrumentation::EDGE_MAP_SIZE;
 use crate::invariant_violation;
 use crate::proxy::Proxy;
 use crate::state_machine::{self, StateMachine};
-use crate::trace::{TraceEntry, Violation};
+use crate::trace::Violation;
 use ::url::Url;
 use serde_json as json;
 use std::cmp::max;
@@ -24,8 +24,9 @@ pub struct RunnerOptions {
 
 #[derive(Debug, Clone)]
 pub enum RunEvent {
-    NewTraceEntry {
-        entry: TraceEntry,
+    NewState {
+        state: BrowserState,
+        last_action: Option<BrowserAction>,
         violation: Option<Violation>,
     },
 }
@@ -132,7 +133,6 @@ impl Runner {
         let mut last_action: Option<BrowserAction> = None;
         let mut last_action_timeout = Timeout::from_secs(1);
         let mut edges = [0u8; EDGE_MAP_SIZE];
-        let mut hash_previous: Option<u64> = None;
 
         loop {
             select! {
@@ -161,23 +161,14 @@ impl Runner {
                                 random::pick_action(&mut rng, actions)
                             };
 
-                            let entry = TraceEntry {
-                                timestamp: state.timestamp,
-                                url: state.url.clone(),
-                                hash_previous,
-                                hash_current: state.transition_hash,
-                                action: last_action,
-                                screenshot: state.screenshot,
-                            };
-                            events.send(RunEvent::NewTraceEntry {
-                                entry: entry.clone(),
+                            events.send(RunEvent::NewState {
+                                state,
+                                last_action,
                                 violation: violation.clone(),
                             })?;
                             if let Some(_) = violation && options.stop_on_violation {
                                 return Ok(())
                             }
-
-                            hash_previous = state.transition_hash;
 
                             match action {
                                 (action, timeout) => {

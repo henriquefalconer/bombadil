@@ -1,17 +1,14 @@
 use ::url::Url;
 use anyhow::Result;
 use clap::Parser;
-use serde_json as json;
-use std::{str::FromStr, time::UNIX_EPOCH};
+use std::str::FromStr;
 use tempfile::TempDir;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 
 use antithesis_browser::{
     browser::BrowserOptions,
     proxy::Proxy,
     runner::{Runner, RunnerOptions},
-    trace::TraceEntry,
+    trace::writer::TraceWriter,
 };
 
 #[derive(Parser)]
@@ -87,13 +84,7 @@ async fn main() -> Result<()> {
         } => {
             let user_data_directory = TempDir::with_prefix("user_data_")?;
             // TODO: make this configurable with CLI option
-            let states_directory = TempDir::with_prefix("states_")?.keep();
-            log::info!(
-                "storing trace in {}",
-                &states_directory
-                    .to_str()
-                    .expect("states directory is invalid")
-            );
+            let trace_directory = TempDir::with_prefix("states_")?.keep();
 
             let browser_options = BrowserOptions {
                 headless,
@@ -112,48 +103,21 @@ async fn main() -> Result<()> {
             )
             .await?;
             let mut events = runner.start();
-
-            let mut trace_file = File::options()
-                .append(true)
-                .create(true)
-                .open(states_directory.join("trace.jsonl"))
-                .await?;
-            let screenshots_dir_path = states_directory.join("screenshots");
-            tokio::fs::create_dir_all(&screenshots_dir_path).await?;
+            let mut writer = TraceWriter::initialize(trace_directory).await?;
 
             let exit_code: anyhow::Result<Option<i32>> = async {
                 loop {
                     match events.next().await {
                         Ok(Some(
-                            antithesis_browser::runner::RunEvent::NewTraceEntry {
-                                entry,
+                            antithesis_browser::runner::RunEvent::NewState {
+                                state,
+                                last_action,
                                 violation,
                             },
                         )) => {
-                            log::debug!("new trace entry: {:?}", entry);
-
-                            let screenshot_path = screenshots_dir_path.join(
-                                format!("{}.{}", entry.timestamp.duration_since(UNIX_EPOCH)?.as_micros(), &entry.screenshot.format.extension())
-                            );
-                            File::create_new(&screenshot_path).await?.write_all(&entry.screenshot.data).await?;
-
-                            let entry = TraceEntry {
-                                timestamp: entry.timestamp,
-                                url: entry.url,
-                                hash_previous: entry.hash_previous,
-                                hash_current: entry.hash_current,
-                                action: entry.action,
-                                screenshot: screenshot_path
-                            };
-
-                            trace_file
-                                .write(json::to_string(&entry)?.as_bytes())
+                            writer
+                                .write(last_action, state, violation.clone())
                                 .await?;
-                            trace_file.write_u8(b'\n').await?;
-
-                            if let Some(hash) = entry.hash_current {
-                                log::debug!("got new transition hash: {:?}", hash);
-                            };
 
                             if let Some(violation) = violation {
                                 log::error!("violation: {}", violation);
