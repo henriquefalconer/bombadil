@@ -1,5 +1,5 @@
 use crate::browser::actions::{available_actions, BrowserAction, Timeout};
-use crate::browser::random;
+use crate::browser::{random, BrowserOptions};
 use crate::instrumentation::EDGE_MAP_SIZE;
 use crate::invariant_violation;
 use crate::proxy::Proxy;
@@ -16,7 +16,7 @@ use tokio::{select, spawn};
 use crate::browser::state::{
     BrowserState, ConsoleEntryLevel, Coverage, Exception,
 };
-use crate::browser::{Browser, BrowserOptions};
+use crate::browser::{Browser, DebuggerOptions};
 
 pub struct RunnerOptions {
     pub stop_on_violation: bool,
@@ -47,18 +47,28 @@ impl Runner {
     pub async fn new(
         origin: Url,
         options: RunnerOptions,
-        browser_options: &BrowserOptions,
+        browser_options: BrowserOptions,
+        mut debugger_options: DebuggerOptions,
     ) -> anyhow::Result<Self> {
         let (events, _) = broadcast::channel(16);
         let (done_sender, done_receiver) = oneshot::channel();
         let (shutdown_sender, shutdown_receiver) = oneshot::channel();
         let proxy = Proxy::spawn(0).await?;
 
-        let mut browser_options = browser_options.clone();
-        browser_options.proxy =
-            Some(format!("http://127.0.0.1:{}", proxy.port));
+        if let DebuggerOptions::Managed {
+            ref mut launch_options,
+            ..
+        } = debugger_options
+        {
+            launch_options.proxy =
+                Some(format!("http://127.0.0.1:{}", proxy.port));
+        } else {
+            log::warn!("coverage instrumentation proxy is not supported when using an externally managed debugger");
+        }
 
-        let browser = Browser::new(origin.clone(), &browser_options).await?;
+        let browser =
+            Browser::new(origin.clone(), browser_options, debugger_options)
+                .await?;
 
         Ok(Runner {
             origin,

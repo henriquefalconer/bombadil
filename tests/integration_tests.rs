@@ -2,13 +2,15 @@ use anyhow::anyhow;
 use axum::Router;
 use std::{fmt::Display, sync::Once, time::Duration};
 use tempfile::TempDir;
-use tokio::{spawn, sync::Semaphore};
-use tokio_stream::StreamExt;
+use tokio::sync::Semaphore;
 use tower_http::services::ServeDir;
 use url::Url;
 
 use antithesis_browser::{
-    browser::{actions::BrowserAction, Browser, BrowserOptions},
+    browser::{
+        actions::BrowserAction, Browser, BrowserOptions, DebuggerOptions,
+        Emulation, LaunchOptions,
+    },
     runner::{RunEvent, Runner, RunnerOptions},
     state_machine::StateMachine,
 };
@@ -98,13 +100,20 @@ async fn run_browser_test(name: &str, expect: Expect, timeout: Duration) {
         RunnerOptions {
             stop_on_violation: true,
         },
-        &BrowserOptions {
-            headless: false,
-            no_sandbox: false,
-            user_data_directory: user_data_directory.path().to_path_buf(),
-            width: 800,
-            height: 600,
-            proxy: None,
+        BrowserOptions {
+            create_target: true,
+            emulation: Emulation {
+                width: 800,
+                height: 600,
+            },
+        },
+        DebuggerOptions::Managed {
+            launch_options: LaunchOptions {
+                headless: true,
+                no_sandbox: false,
+                user_data_directory: user_data_directory.path().to_path_buf(),
+                proxy: None,
+            },
         },
     )
     .await
@@ -253,13 +262,20 @@ async fn test_browser_lifecycle() {
 
     let mut browser = Browser::new(
         origin,
-        &BrowserOptions {
-            headless: true,
-            no_sandbox: false,
-            user_data_directory: user_data_directory.path().to_path_buf(),
-            width: 800,
-            height: 600,
-            proxy: None,
+        BrowserOptions {
+            create_target: true,
+            emulation: Emulation {
+                width: 800,
+                height: 600,
+            },
+        },
+        DebuggerOptions::Managed {
+            launch_options: LaunchOptions {
+                headless: true,
+                no_sandbox: false,
+                user_data_directory: user_data_directory.path().to_path_buf(),
+                proxy: None,
+            },
         },
     )
     .await
@@ -288,38 +304,4 @@ async fn test_browser_lifecycle() {
     }
 
     browser.terminate().await.unwrap();
-}
-
-// Temporary repro for https://github.com/mattsse/chromiumoxide/issues/287
-#[tokio::test]
-async fn test_browser_raw() {
-    setup();
-
-    let url = "https://en.wikipedia.org";
-    let user_data_directory = TempDir::new().unwrap();
-
-    let (browser, mut handler) = chromiumoxide::Browser::launch(
-        chromiumoxide::BrowserConfig::builder()
-            .new_headless_mode()
-            .user_data_dir(user_data_directory.path())
-            .build()
-            .unwrap(),
-    )
-    .await
-    .unwrap();
-
-    spawn(async move {
-        loop {
-            let _ = handler.next().await;
-        }
-    });
-
-    let page = browser.new_page(url.to_string()).await.unwrap();
-    let title = page.get_title().await.unwrap();
-    assert_eq!(title, Some("Wikipedia, the free encyclopedia".to_string()));
-
-    drop(browser);
-    // browser.close().await.unwrap();
-    // let exit = browser.wait().await.unwrap();
-    // assert_eq!(exit.unwrap().code(), Some(0));
 }

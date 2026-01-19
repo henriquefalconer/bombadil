@@ -68,4 +68,10 @@ mod tests {
         let actual = Branch::<()>(vec![]).prune();
         assert_eq!(actual, None);
     }
+
+    #[test]
+    fn test_prune_empty_subtrees() {
+        let actual = Branch::<()>(vec![Branch(vec![]), Branch(vec![])]).prune();
+        assert_eq!(actual, None);
+    }
 }

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chromiumoxide::browser::{BrowserConfigBuilder, HeadlessMode};
 use chromiumoxide::cdp::browser_protocol::page::{
     self, ClientNavigationReason, FrameId, NavigationType,
@@ -19,6 +19,7 @@ use tempfile::TempDir;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::{channel, Receiver, Sender};
 use tokio::sync::oneshot;
+use tokio::time::sleep;
 use tokio::{select, spawn};
 use tokio_stream::wrappers::BroadcastStream;
 use url::Url;
@@ -95,13 +96,29 @@ struct BrowserContext {
 }
 
 #[derive(Clone)]
-pub struct BrowserOptions {
+pub struct LaunchOptions {
     pub headless: bool,
     pub user_data_directory: PathBuf,
-    pub width: u16,
-    pub height: u16,
     pub no_sandbox: bool,
     pub proxy: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct Emulation {
+    pub width: u16,
+    pub height: u16,
+}
+
+#[derive(Clone)]
+pub struct BrowserOptions {
+    pub emulation: Emulation,
+    pub create_target: bool,
+}
+
+#[derive(Clone)]
+pub enum DebuggerOptions {
+    External { remote_debugger: Url },
+    Managed { launch_options: LaunchOptions },
 }
 
 pub struct Browser {
@@ -113,16 +130,30 @@ pub struct Browser {
     browser: chromiumoxide::Browser,
     page: Arc<Page>,
     origin: Url,
+    go_to_origin_on_init: bool,
 }
 
 impl Browser {
     pub async fn new(
         origin: Url,
-        browser_options: &BrowserOptions,
+        browser_options: BrowserOptions,
+        debugger_options: DebuggerOptions,
     ) -> Result<Self> {
-        let browser_config = browser_options_to_config(browser_options)?;
-        let (browser, mut handler) =
-            chromiumoxide::Browser::launch(browser_config).await?;
+        let (mut browser, mut handler) = match debugger_options {
+            DebuggerOptions::External {
+                ref remote_debugger,
+            } => {
+                chromiumoxide::Browser::connect(remote_debugger.as_str())
+                    .await?
+            }
+            DebuggerOptions::Managed { ref launch_options } => {
+                let browser_config = launch_options_to_config(
+                    launch_options,
+                    &browser_options.emulation,
+                )?;
+                chromiumoxide::Browser::launch(browser_config).await?
+            }
+        };
 
         let _handle = tokio::spawn(async move {
             loop {
@@ -135,7 +166,13 @@ impl Browser {
 
         let (actions_sender, _) = channel::<BrowserAction>(1);
 
-        let page = Arc::new(browser.new_page("about:blank").await?);
+        let page = if browser_options.create_target {
+            Arc::new(browser.new_page("about:blank").await.context(
+                "could not create target (is this supported by the CDP host?)",
+            )?)
+        } else {
+            Arc::new(find_page(&mut browser).await?)
+        };
 
         page.enable_dom().await?;
         page.enable_css().await?;
@@ -144,8 +181,8 @@ impl Browser {
 
         page.execute(
             emulation::SetDeviceMetricsOverrideParams::builder()
-                .width(browser_options.width)
-                .height(browser_options.height)
+                .width(browser_options.emulation.width)
+                .height(browser_options.emulation.height)
                 // This is currently hardcoded to whatever the unnamed original developer of this
                 // code has Wayland configured to. This is set to prevent the screenshotting from
                 // flickering the headful browser.
@@ -213,6 +250,10 @@ impl Browser {
             done_receiver,
             page,
             origin,
+            go_to_origin_on_init: matches!(
+                debugger_options,
+                DebuggerOptions::Managed { .. }
+            ),
         })
     }
 }
@@ -222,12 +263,18 @@ impl state_machine::StateMachine for Browser {
     type Action = BrowserAction;
 
     async fn initiate(&mut self) -> Result<()> {
-        let page = self.page.clone();
-        let origin = self.origin.to_string();
-        spawn(async move {
-            log::info!("going to origin");
-            let _ = page.goto(origin).await;
-        });
+        if self.go_to_origin_on_init {
+            let page = self.page.clone();
+            let origin = self.origin.to_string();
+            spawn(async move {
+                log::info!("going to origin");
+                let _ = page.goto(origin).await;
+            });
+        } else {
+            log::debug!(
+                "using externally managed debugger, not doing anything on init"
+            )
+        }
         Ok(())
     }
 
@@ -462,7 +509,7 @@ fn run_state_machine(
 ) {
     spawn(async move {
         let result = (async || {
-            let mut state_current = InnerState::Initial;
+            let mut state_current = InnerState::Running(vec![]);
             log::info!("processing events");
             loop {
                 select! {
@@ -781,13 +828,14 @@ fn remote_object_to_json(object: &runtime::RemoteObject) -> json::Value {
     }
 }
 
-fn browser_options_to_config(
-    browser_options: &BrowserOptions,
+fn launch_options_to_config(
+    launch_options: &LaunchOptions,
+    emulation: &Emulation,
 ) -> Result<BrowserConfig> {
     let crash_dumps_dir = TempDir::new()?;
     let apply_sandbox =
         |builder: BrowserConfigBuilder| -> BrowserConfigBuilder {
-            if browser_options.no_sandbox {
+            if launch_options.no_sandbox {
                 builder.no_sandbox().args([
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
@@ -797,7 +845,7 @@ fn browser_options_to_config(
             }
         };
     let apply_proxy = |builder: BrowserConfigBuilder| -> BrowserConfigBuilder {
-        if let Some(proxy_address) = &browser_options.proxy {
+        if let Some(proxy_address) = &launch_options.proxy {
             builder.args([
                 format!("--proxy-server={}", proxy_address),
                 "--proxy-bypass-list=<-loopback>".to_string(),
@@ -807,16 +855,13 @@ fn browser_options_to_config(
         }
     };
     apply_proxy(apply_sandbox(BrowserConfig::builder()))
-        .headless_mode(if browser_options.headless {
+        .headless_mode(if launch_options.headless {
             HeadlessMode::New
         } else {
             HeadlessMode::False
         })
-        .window_size(
-            browser_options.width as u32,
-            browser_options.height as u32,
-        )
-        .user_data_dir(browser_options.user_data_directory.clone())
+        .window_size(emulation.width as u32, emulation.height as u32)
+        .user_data_dir(launch_options.user_data_directory.clone())
         .args([
             &format!(
                 "--crash-dumps-dir={}",
@@ -831,4 +876,31 @@ fn browser_options_to_config(
         ])
         .build()
         .map_err(|s| anyhow!(s))
+}
+
+async fn find_page(browser: &mut chromiumoxide::Browser) -> Result<Page> {
+    let targets = browser.fetch_targets().await.unwrap();
+    let page_targets = targets
+        .iter()
+        .filter(|t| t.r#type == "page")
+        .collect::<Vec<_>>();
+
+    let target = page_targets
+        .first()
+        .ok_or(anyhow!("no page target available"))?;
+
+    if page_targets.len() > 2 {
+        log::warn!(
+            "there are multiple open page targets, picking the first one: {}",
+            &target.url
+        )
+    }
+    for attempt in 1..=5 {
+        log::debug!("attempt {attempt} at finding existing page");
+        sleep(Duration::from_millis(100 * attempt)).await;
+        if let Ok(page) = browser.get_page(target.target_id.clone()).await {
+            return Ok(page);
+        }
+    }
+    bail!("coulnd't find an existing page to use");
 }

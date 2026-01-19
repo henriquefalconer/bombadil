@@ -231,6 +231,7 @@ pub async fn available_actions(
         (Tree::Branch(run_actions_script(state, "scrolls").await?)),
     ])
     .prune();
+    log::debug!("action tree: {:?}", &tree);
 
     if let Some(tree) = tree {
         Ok(tree)

@@ -1,11 +1,11 @@
 use ::url::Url;
 use anyhow::Result;
-use clap::Parser;
+use clap::{Args, Parser};
 use std::{path::PathBuf, str::FromStr};
 use tempfile::TempDir;
 
 use antithesis_browser::{
-    browser::BrowserOptions,
+    browser::{BrowserOptions, DebuggerOptions, Emulation, LaunchOptions},
     proxy::Proxy,
     runner::{Runner, RunnerOptions},
     trace::writer::TraceWriter,
@@ -18,24 +18,36 @@ struct CLI {
     command: Command,
 }
 
+#[derive(Args)]
+struct TestSharedOptions {
+    origin: Origin,
+    #[arg(long)]
+    output_path: Option<PathBuf>,
+    #[arg(long)]
+    exit_on_violation: bool,
+    #[arg(long, default_value_t = 1024)]
+    width: u16,
+    #[arg(long, default_value_t = 768)]
+    height: u16,
+}
+
 #[derive(clap::Subcommand)]
 enum Command {
     Test {
-        origin: Origin,
-        #[arg(long)]
-        seed: Option<String>,
+        #[clap(flatten)]
+        shared: TestSharedOptions,
         #[arg(long, default_value_t = false)]
         headless: bool,
         #[arg(long, default_value_t = false)]
         no_sandbox: bool,
-        #[arg(long, default_value_t = 1024)]
-        width: u16,
-        #[arg(long, default_value_t = 768)]
-        height: u16,
-        #[arg(long, default_value_t = false)]
-        exit_on_violation: bool,
+    },
+    TestExternal {
+        #[clap(flatten)]
+        shared: TestSharedOptions,
         #[arg(long)]
-        output_path: Option<PathBuf>,
+        remote_debugger: Url,
+        #[arg(long)]
+        create_target: bool,
     },
     Proxy {
         #[arg(long)]
@@ -76,78 +88,47 @@ async fn main() -> Result<()> {
     let cli = CLI::parse();
     match cli.command {
         Command::Test {
-            origin,
-            seed: _,
+            shared,
             headless,
-            width,
-            height,
             no_sandbox,
-            exit_on_violation,
-            output_path,
         } => {
-            let output_path = match output_path {
-                Some(path) => path,
-                None => TempDir::with_prefix("states_")?.keep().to_path_buf(),
-            };
-
             let user_data_directory = TempDir::with_prefix("user_data_")?;
+
             let browser_options = BrowserOptions {
-                headless,
-                user_data_directory: user_data_directory.path().to_path_buf(),
-                width,
-                height,
-                no_sandbox,
-                proxy: None,
-            };
-            let runner = Runner::new(
-                origin.url,
-                RunnerOptions {
-                    stop_on_violation: exit_on_violation,
+                create_target: true,
+                emulation: Emulation {
+                    width: shared.width,
+                    height: shared.height,
                 },
-                &browser_options,
-            )
-            .await?;
-            let mut events = runner.start();
-            let mut writer = TraceWriter::initialize(output_path).await?;
-
-            let exit_code: anyhow::Result<Option<i32>> = async {
-                loop {
-                    match events.next().await {
-                        Ok(Some(
-                            antithesis_browser::runner::RunEvent::NewState {
-                                state,
-                                last_action,
-                                violation,
-                            },
-                        )) => {
-                            writer
-                                .write(last_action, state, violation.clone())
-                                .await?;
-
-                            if let Some(violation) = violation {
-                                log::error!("violation: {}", violation);
-                                if exit_on_violation {
-                                    break Ok(Some(2));
-                                }
-                            }
-                        }
-                        Ok(None) => break Ok(None),
-                        Err(err) => {
-                            eprintln!("next run event failure: {}", err);
-                            break Ok(Some(1));
-                        }
-                    }
-                }
-            }
-            .await;
-
-            events.shutdown().await?;
-
-            if let Some(exit_code) = exit_code? {
-                std::process::exit(exit_code);
-            }
-
-            Ok(())
+            };
+            let debugger_options = DebuggerOptions::Managed {
+                launch_options: LaunchOptions {
+                    headless,
+                    user_data_directory: user_data_directory
+                        .path()
+                        .to_path_buf(),
+                    no_sandbox,
+                    proxy: None,
+                },
+            };
+            test(shared, browser_options, debugger_options).await
+        }
+        Command::TestExternal {
+            shared,
+            remote_debugger,
+            create_target,
+        } => {
+            let browser_options = BrowserOptions {
+                create_target,
+                emulation: Emulation {
+                    width: shared.width,
+                    height: shared.height,
+                },
+            };
+            let debugger_options = DebuggerOptions::External {
+                remote_debugger: remote_debugger,
+            };
+            test(shared, browser_options, debugger_options).await
         }
         Command::Proxy { port } => {
             let mut proxy = Proxy::spawn(port).await?;
@@ -155,4 +136,62 @@ async fn main() -> Result<()> {
             Ok(proxy.done().await)
         }
     }
+}
+
+async fn test(
+    shared_options: TestSharedOptions,
+    browser_options: BrowserOptions,
+    debugger_options: DebuggerOptions,
+) -> Result<()> {
+    let output_path = match shared_options.output_path {
+        Some(path) => path,
+        None => TempDir::with_prefix("states_")?.keep().to_path_buf(),
+    };
+
+    let runner = Runner::new(
+        shared_options.origin.url,
+        RunnerOptions {
+            stop_on_violation: shared_options.exit_on_violation,
+        },
+        browser_options,
+        debugger_options,
+    )
+    .await?;
+    let mut events = runner.start();
+    let mut writer = TraceWriter::initialize(output_path).await?;
+
+    let exit_code: anyhow::Result<Option<i32>> = async {
+        loop {
+            match events.next().await {
+                Ok(Some(antithesis_browser::runner::RunEvent::NewState {
+                    state,
+                    last_action,
+                    violation,
+                })) => {
+                    writer.write(last_action, state, violation.clone()).await?;
+
+                    if let Some(violation) = violation {
+                        log::error!("violation: {}", violation);
+                        if shared_options.exit_on_violation {
+                            break Ok(Some(2));
+                        }
+                    }
+                }
+                Ok(None) => break Ok(None),
+                Err(err) => {
+                    eprintln!("next run event failure: {}", err);
+                    break Ok(Some(1));
+                }
+            }
+        }
+    }
+    .await;
+
+    events.shutdown().await?;
+
+    if let Some(exit_code) = exit_code? {
+        std::process::exit(exit_code);
+    }
+
+    Ok(())
 }
