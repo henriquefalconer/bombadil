@@ -268,6 +268,7 @@ async fn test_browser_lifecycle() {
             emulation: Emulation {
                 width: 800,
                 height: 600,
+                device_scale_factor: 2.0,
             },
         },
         DebuggerOptions::Managed {
