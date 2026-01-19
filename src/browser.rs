@@ -36,7 +36,6 @@ pub mod state;
 
 #[derive(Debug)]
 enum InnerState {
-    Initial,
     Pausing(Vec<ConsoleEntry>),
     Paused,
     Resuming(BrowserAction),
@@ -582,7 +581,6 @@ async fn process_event(
         ) => {
             let console_entries = match &state {
                 InnerState::Pausing(console_entries) => console_entries.clone(),
-                InnerState::Initial => vec![],
                 InnerState::Paused => vec![],
                 InnerState::Resuming(_) => vec![],
                 InnerState::Navigating => vec![],
@@ -681,7 +679,6 @@ async fn process_event(
             // too. Maybe some race or that events are dropped.
             let console_entries = match &state {
                 InnerState::Pausing(console_entries) => console_entries.clone(),
-                InnerState::Initial => vec![],
                 InnerState::Paused => vec![],
                 InnerState::Resuming(_) => vec![],
                 InnerState::Navigating => vec![],
