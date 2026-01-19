@@ -1,3 +1,5 @@
+import { Point, Actions } from "../actions";
+
 result = (() => {
 
   function clickable_point(element: Element) {
@@ -15,11 +17,6 @@ result = (() => {
     return style.display !== "none" && style.visibility !== "hidden" && parseFloat(style.opacity || "1") > 0.0;
   }
 
-  type Point = {
-    x: number,
-    y: number,
-  };
-
   type Rect = Point & {
     width: number,
     height: number,
@@ -32,7 +29,7 @@ result = (() => {
       point.y <= (rect.y + rect.height);
   }
 
-  const clicks = [];
+  const clicks: Actions = [];
   const url_current = new URL(window.location.toString());
   for (const anchor of document.querySelectorAll("a")) {
     try {
@@ -80,6 +77,7 @@ result = (() => {
           name: anchor.nodeName,
           content: anchor.textContent.trim().replaceAll(/\s+/g, " "),
           point,
+          element: anchor,
         }
       }]);
     } catch (e) {
@@ -118,6 +116,7 @@ result = (() => {
           name: element.nodeName,
           content: element.textContent.trim().replaceAll(/\s+/g, " "),
           point,
+          element: element,
         }
       }]);
     } catch (e) {

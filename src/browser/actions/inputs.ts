@@ -1,3 +1,5 @@
+import { Actions } from "../actions";
+
 result = (() => {
   let element = document.activeElement;
 
@@ -36,4 +38,4 @@ result = (() => {
   }
 
   return [];
-})();
+})() satisfies Actions;

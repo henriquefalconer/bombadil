@@ -1,5 +1,7 @@
+import { Point, Actions } from "../actions";
+
 result = (() => {
-  const scrolls = [];
+  const scrolls: Actions = [];
 
   if (window.scrollY > 0) {
     scrolls.push([1, 100, {
