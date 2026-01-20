@@ -306,10 +306,6 @@ rec {
             features = [ "backtrace" ];
           }
           {
-            name = "axum";
-            packageId = "axum";
-          }
-          {
             name = "base64";
             packageId = "base64";
           }
@@ -349,14 +345,6 @@ rec {
           {
             name = "http-body-util";
             packageId = "http-body-util";
-          }
-          {
-            name = "hyper";
-            packageId = "hyper";
-          }
-          {
-            name = "hyper-util";
-            packageId = "hyper-util";
           }
           {
             name = "include_dir";
@@ -410,6 +398,7 @@ rec {
           {
             name = "tokio";
             packageId = "tokio";
+            features = [ "full" ];
           }
           {
             name = "tokio-stream";
@@ -442,6 +431,10 @@ rec {
           }
         ];
         devDependencies = [
+          {
+            name = "axum";
+            packageId = "axum";
+          }
           {
             name = "insta";
             packageId = "insta";
@@ -7034,6 +7027,11 @@ rec {
             features = [ "os-poll" "os-ext" ];
           }
           {
+            name = "parking_lot";
+            packageId = "parking_lot";
+            optional = true;
+          }
+          {
             name = "pin-project-lite";
             packageId = "pin-project-lite";
           }
@@ -7101,7 +7099,7 @@ rec {
           "tracing" = [ "dep:tracing" ];
           "windows-sys" = [ "dep:windows-sys" ];
         };
-        resolvedDefaultFeatures = [ "bytes" "default" "fs" "io-std" "io-util" "libc" "macros" "mio" "net" "process" "rt" "rt-multi-thread" "signal-hook-registry" "socket2" "sync" "time" "tokio-macros" "windows-sys" ];
+        resolvedDefaultFeatures = [ "bytes" "default" "fs" "full" "io-std" "io-util" "libc" "macros" "mio" "net" "parking_lot" "process" "rt" "rt-multi-thread" "signal" "signal-hook-registry" "socket2" "sync" "time" "tokio-macros" "windows-sys" ];
       };
       "tokio-macros" = rec {
         crateName = "tokio-macros";
@@ -7894,9 +7892,9 @@ rec {
       };
       "unicase" = rec {
         crateName = "unicase";
-        version = "2.8.1";
+        version = "2.9.0";
         edition = "2018";
-        sha256 = "0fd5ddbhpva7wrln2iah054ar2pc1drqjcll0f493vj3fv8l9f3m";
+        sha256 = "0hh1wrfd7807mfph2q67jsxqgw8hm82xg2fb8ln8cvblkwxbri6v";
         authors = [
           "Sean McArthur <sean@seanmonstar.com>"
         ];
