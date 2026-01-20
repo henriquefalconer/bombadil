@@ -8,8 +8,6 @@ export type Action = {
     name: string,
     content: string,
     point: Point,
-    /// Not actually used but helpful when working on action scripts.
-    element: Element,
   }
 } | {
   TypeText: {

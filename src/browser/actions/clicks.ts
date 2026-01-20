@@ -89,12 +89,12 @@ result = (() => {
         continue;
       }
 
+      console.debug('adding click action', anchor);
       clicks.push([1, 500, {
         Click: {
           name: anchor.nodeName,
           content: anchor.textContent.trim().replaceAll(/\s+/g, " "),
           point,
-          element: anchor,
         }
       }]);
 
@@ -134,12 +134,12 @@ result = (() => {
         continue;
       }
 
+      console.debug('adding click action', element);
       clicks.push([3, 300, {
         Click: {
           name: element.nodeName,
           content: element.textContent.trim().replaceAll(/\s+/g, " "),
           point,
-          element: element,
         }
       }]);
 
@@ -174,12 +174,12 @@ result = (() => {
         continue;
       }
 
+      console.debug('adding click action', element);
       clicks.push([1, 500, {
         Click: {
           name: element.nodeName,
           content: element.textContent.trim().replaceAll(/\s+/g, " "),
           point,
-          element: element,
         }
       }]);
 
