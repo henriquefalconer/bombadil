@@ -1,4 +1,3 @@
-
 <h1 align="center">Bombadil</h1>
 <p align="center">Fuzzing web and Electron apps &mdash; locally, in CI, and in Antithesis.</p>
 <p align="center"><img alt="Tom Bombadil" src="tom.png" width=240 /></p>
@@ -53,19 +52,4 @@ After any changes to dependencies in Cargo.toml:
 
 ```bash
 crate2nix generate -o nix/Cargo.nix
-```
-
-
-## JS Instrumentation Proxy
-
-First, start the proxy:
-
-```bash
-cargo run -- proxy --port=9000
-```
-
-Then run:
-
-```bash
-chromium --incognito --temp-profile --proxy-server="http://127.0.0.1:9000" --proxy-bypass-list="<-loopback>"
 ```
