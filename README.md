@@ -1,8 +1,7 @@
-<p align="center">
-<img alt="Tom Bombadil" src="tom.png" width=400 />
-<h1>Bombadil</h1>
-<p>Fuzzing web and Electron apps -- locally, in CI, and in Antithesis.</p>
-</p>
+
+<h1 align="center">Bombadil</h1>
+<p align="center">Fuzzing web and Electron apps &mdash; locally, in CI, and in Antithesis.</p>
+<p align="center"><img alt="Tom Bombadil" src="tom.png" width=240 /></p>
 
 ## Usage
 
