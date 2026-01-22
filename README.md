@@ -1,55 +1,43 @@
-<h1 align="center">Bombadil</h1>
-<p align="center">Advanced testing of any web or Electron app.</em></p>
-<p align="center"><img alt="Tom Bombadil" src="tom.png" width=360 /></p>
+# Bombadil
+
+Property-based testing for web UIs, autonomously exploring and validating
+correctness properties, *finding harder bugs earlier*.
+
+Runs in your local developer environment, in CI, and inside Antithesis.
 
 ## Usage
 
-### Running tests
+Start a test:
 
 ```bash
-cargo run -- test https://example.com
+bombadil test https://example.com
 ```
 
-Run headless:
+Or headless (useful in CI):
 
 ```bash
-cargo run -- test https://example.com --headless
+bombadil test https://example.com --headless
 ```
 
-See debug logs:
+These will log any property violations they find. If you want to immediately
+exit, for instance when running in CI, run with `--exit-on-violation`:
 
 ```bash
-RUST_LOG=bombadil=debug cargo run -- test https://example.com --headless
+bombadil test --exit-on-violation https://example.com
 ```
 
-## Running in podman
+## More Resources
 
-Build and tag the image:
+* [Contributing](docs/contributing.md)
+* [Project Charter](https://docs.google.com/document/d/1r4jl8DxNPgCk_RC6GJgn7yBa_LB3iTSaIHcpnUiT3ss/edit?tab=t.0) (internal document)
 
-```bash
-nix build ".#docker" \
-    && podman load < result \
-    && podman tag localhost/bombadil_docker:$(nix eval --raw '.#packages.x86_64-linux.docker.imageTag') localhost/bombadil_docker:latest
-```
+<hr>
 
-Run it:
+<img alt="Tom Bombadil" src="docs/tom.png" width=360 />
 
-```bash
-podman run -ti localhost/bombadil_docker:latest <SOME_URL>
-```
+> Old Tom Bombadil is a merry fellow,
+> Bright blue his jacket is, and his boots are yellow.
+> Bugs have never fooled him yet, for Tom, he is the Master:
+> His specs are stronger specs, and his fuzzer is faster.
 
-## Development
-
-### Integration tests
-
-```bash
-cargo test --test integration_tests
-```
-
-### Changing dependencies
-
-After any changes to dependencies in Cargo.toml:
-
-```bash
-crate2nix generate -o nix/Cargo.nix
-```
+Built by [Antithesis](https://antithesis.com).
