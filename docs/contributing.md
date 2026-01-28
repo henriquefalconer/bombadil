@@ -1,10 +1,25 @@
 # Contributing
 
+## Developer Environment
+
+The blessed setup is using the Nix flake to get a shell.
+
+```bash
+nix develop
+# or if you have direnv:
+direnv allow .
+```
+
+## Debugging
+
 See debug logs:
 
 ```bash
 RUST_LOG=bombadil=debug cargo run -- test https://example.com --headless
 ```
+
+There's also VSCode launch configs for debugging with codelldb. These have only
+been tested from `nvim-dap`, though.
 
 ## Running in podman
 
