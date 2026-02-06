@@ -100,7 +100,7 @@ impl Formula {
             });
         }
 
-        if value.instance_of(&bombadil.contextful, context)? {
+        if value.instance_of(&bombadil.thunk, context)? {
             let apply_object = object
                 .get(js_string!("apply"), context)?
                 .as_callable()

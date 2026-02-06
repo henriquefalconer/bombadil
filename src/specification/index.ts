@@ -14,14 +14,14 @@ export const runtime_default = new Runtime<State>();
 export { time, type Cell } from "bombadil/internal";
 
 export class Formula {
-  and(that: IntoCondition): Formula {
-    return new And(this, condition(that));
+  and(that: IntoFormula): Formula {
+    return new And(this, now(that));
   }
-  or(that: IntoCondition): Formula {
-    return new Or(this, condition(that));
+  or(that: IntoFormula): Formula {
+    return new Or(this, now(that));
   }
-  implies(that: IntoCondition): Formula {
-    return new Implies(this, condition(that));
+  implies(that: IntoFormula): Formula {
+    return new Implies(this, now(that));
   }
 }
 
@@ -112,7 +112,7 @@ export class Eventually extends Formula {
   }
 }
 
-export class Contextful extends Formula {
+export class Thunk extends Formula {
   constructor(
     private pretty: string,
     public apply: () => Formula,
@@ -125,13 +125,13 @@ export class Contextful extends Formula {
   }
 }
 
-type IntoCondition = (() => Formula | boolean) | Formula;
+type IntoFormula = (() => Formula | boolean) | Formula;
 
-export function not(value: IntoCondition) {
-  return new Not(condition(value));
+export function not(value: IntoFormula) {
+  return new Not(now(value));
 }
 
-export function condition(x: IntoCondition): Formula {
+export function now(x: IntoFormula): Formula {
   if (typeof x === "function") {
     const pretty = x
       .toString()
@@ -142,24 +142,24 @@ export function condition(x: IntoCondition): Formula {
       return typeof result === "boolean" ? new Pure(pretty, result) : result;
     }
 
-    return new Contextful(pretty, () => lift_result(x()));
+    return new Thunk(pretty, () => lift_result(x()));
   }
 
   return x;
 }
 
-export function next(x: IntoCondition): Formula {
-  return new Next(condition(x));
+export function next(x: IntoFormula): Formula {
+  return new Next(now(x));
 }
 
-export function always(x: IntoCondition): Formula {
-  return new Always(condition(x));
+export function always(x: IntoFormula): Formula {
+  return new Always(now(x));
 }
 
-export function eventually(x: IntoCondition) {
+export function eventually(x: IntoFormula) {
   return {
     within(n: number, unit: TimeUnit): Formula {
-      return new Eventually(new Duration(n, unit), condition(x));
+      return new Eventually(new Duration(n, unit), now(x));
     },
   };
 }
