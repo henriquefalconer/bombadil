@@ -5,8 +5,8 @@ correctness properties, *finding harder bugs earlier*.
 
 Runs in your local developer environment, in CI, and inside Antithesis.
 
-*NOTE: Bombadil is new and experimental. Stuff is going to change in the early
-days. Even so, we hope you'll try it out!*
+> [!NOTE]
+> Bombadil is new and experimental. Stuff is going to change in the early days. Even so, we hope you'll try it out!
 
 ## How it works 
 
@@ -134,7 +134,8 @@ $ head -n1 /tmp/my-test/trace.jsonl | jq .
 }
 ```
 
-**NOTE:** The format of JSONL traces is currently under development and might change.
+> [!NOTE]
+> The format of JSONL traces is currently under development and might change.
 
 ## Install
 
