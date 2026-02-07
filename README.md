@@ -6,27 +6,20 @@ correctness properties, *finding harder bugs earlier*.
 Runs in your local developer environment, in CI, and inside Antithesis.
 
 *NOTE: Bombadil is new and experimental. Stuff is going to change in the early
-days, and generally stuff will be missing. Even so, we hope you'll try it out!*
+days. Even so, we hope you'll try it out!*
 
-## How it works (or, will work!)
+## How it works 
 
 As a user, you:
 
 * **Write a specification:**
 
-    A specification is a TypeScript module that exports *actions* and *properties*.
+    A specification is a TypeScript module that exports *properties*.
 
-    Actions are what drives a test forward. You reexport the actions from the
-    `bombadil` framework you want and, optionally, you define and export custom
-    actions (e.g. "triple-click this div"). The bulk of actions should be
-    provided by Bombadil itself.
-
-    *NOTE: the support for actions is not ready yet!*
-
-    Properties are linear temporal logic formulas, describing what the system under
-    test should and shouldn't do. Like the actions, the `bombadil` framework provides
-    a set of reasonable properties for web applications. You may also specify your
-    own domain-specific requirements.
+    Properties are linear temporal logic formulas, describing what the system
+    under test should and shouldn't do. The `"bombadil/defaults"` module
+    provides a set of reasonable properties for web applications. You may also
+    specify your own domain-specific requirements.
 
 * **Run tests:**
 
@@ -38,8 +31,65 @@ cases. Instead, you define actions and properties, and Bombadil explores and
 tests your web application for you. This is *property-based testing* or
 *fuzzing* for web applications.
 
-Again, the description above is partly aspirational. We're building in the
-open, so stay tuned!
+## Examples
+
+<details>
+<summary>Starter (only using default properties)</summary>
+
+This specification doesn't specify any custom properties at all, it just
+reexports the default ones provided by Bombadil:
+
+```typescript
+export * from "bombadil/defaults";
+```
+
+</details>
+
+<details>
+<summary>Invariant</summary>
+
+An *invariant* is a very common type of property; something that should always
+be true. Here's one that checks that there's always an `<h1>` element with some
+text in it:
+
+
+```typescript
+import { always, extract } from "bombadil";
+
+const title = extract((state) => state.document.querySelector("h1")?.textContent ?? "");
+
+export const has_title = always(() => title.current.trim() !== "");
+```
+
+</details>
+
+<details>
+<summary>Guarantee</summary>
+
+A *guarantee* property is where something _good_ should happen within some
+bounded amount of time. Here's one that checks that, when something is loading,
+it eventually finishes loading and you see a result:
+
+
+```typescript
+import { now, eventually, extract } from "bombadil";
+
+const is_loading = extract((state) => !!state.document.querySelector("progress"));
+
+const result = extract((state) =>
+  state.document.querySelector(".result")?.textContent ?? null
+);
+
+export const finishes_loading = 
+    now(() => is_loading.current)
+        .implies(
+            eventually(() => 
+            !is_loading.current && result.current !== null
+            ).within(5, "seconds")
+        );
+```
+
+</details>
 
 ## Usage
 
