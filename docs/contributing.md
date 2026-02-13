@@ -70,7 +70,12 @@ cargo test --test integration_tests
    Open up `CHANGELOG.md` and rewrite the commit log into something meaningful.
 
 1. `git commit -m "release v${VERSION_NEW}"`
-1. Push to GitHub and create a pull request. Once reviewed and merged to continue with:
+1. Push to GitHub and create a pull request.
+    
+   Review the changes and let the checks pass. This can take some time due to
+   an unfortunate rebuild of the Cargo deps in Nix.
+
+   Then merge the PR and continue:
 1. `git fetch`
 1. `git tag -am "v${VERSION_NEW}" <SQUASH COMMIT FROM PULL REQUEST>`
 1. `git push origin "v${VERSION_NEW}"`
