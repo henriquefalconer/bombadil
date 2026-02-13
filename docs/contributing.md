@@ -70,8 +70,9 @@ crate2nix generate -o nix/Cargo.nix
 1. Run:
 
    ```
-   (echo "## ${VERSION_NEW}" && echo "" && git log v${VERSION_PREV}..HEAD --oneline | sed 's/^[a-z0-9]* /* /' && echo "") \
-       | cat - CHANGELOG.md > tmp.md && mv tmp.md CHANGELOG.md
+   tail -n +2 CHANGELOG.md > tmp.md
+   (echo "# The Bombadil Changelog" && echo "" && echo "## ${VERSION_NEW}" && echo "" && git log v${VERSION_PREV}..HEAD --oneline | sed 's/^[a-z0-9]* /* /' && echo "") \
+       | cat - tmp.md > CHANGELOG.md && rm tmp.md
    ```
 
    Open up `CHANGELOG.md` and rewrite the commit log into something meaningful.
