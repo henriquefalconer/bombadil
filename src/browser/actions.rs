@@ -3,14 +3,13 @@ use std::time::Duration;
 use anyhow::{Result, anyhow, bail};
 use chromiumoxide::Page;
 use chromiumoxide::cdp::browser_protocol::{input, page};
-use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::sleep;
 
 use crate::browser::keys::key_name;
 use crate::geometry::Point;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub enum BrowserAction {
     Back,
     Forward,
@@ -21,7 +20,6 @@ pub enum BrowserAction {
     },
     TypeText {
         text: String,
-        #[serde(rename = "delayMillis")]
         delay_millis: u64,
     },
     PressKey {

@@ -146,20 +146,35 @@ impl Runner {
                         BrowserEvent::StateChanged(state) => {
                             // Step formulas and collect violations.
                             let snapshots = run_extractors(&state, &extractors, &last_action).await?;
-                            let step_result = verifier.step::<BrowserAction>(snapshots, state.timestamp).await?;
+                            let step_result = verifier.step::<crate::specification::js::JsAction>(snapshots, state.timestamp).await?;
+
+                            // Convert JsAction tree to BrowserAction tree
+                            let action_tree = step_result.actions.try_map(&mut |js_action| {
+                                js_action.to_browser_action()
+                            })?;
+
                             let mut violations = Vec::with_capacity(step_result.properties.len());
+                            let mut all_properties_definite = true;
                             for (name, value) in step_result.properties {
-                                if let PropertyValue::False(violation) = value {
-                                    violations.push(PropertyViolation{ name, violation });
+                                match value {
+                                    PropertyValue::False(violation) => {
+                                        violations.push(PropertyViolation{ name, violation });
+                                    }
+                                    PropertyValue::Residual => {
+                                        all_properties_definite = false;
+                                    }
+                                    PropertyValue::True => {
+                                        // Property is satisfied
+                                    }
                                 }
                             }
                             let has_violations = !violations.is_empty();
 
                             // Make sure we stay within origin.
                             let action_tree = if !is_within_domain(&state.url, origin) {
-                                step_result.actions.filter(&|a| matches!(a, BrowserAction::Back))
+                                action_tree.filter(&|a| matches!(a, BrowserAction::Back))
                             } else {
-                                step_result.actions
+                                action_tree
                             };
 
                             // Update global edges.
@@ -176,6 +191,10 @@ impl Runner {
                                 violations,
                             })?;
                             if has_violations && options.stop_on_violation {
+                                return Ok(())
+                            }
+                            if all_properties_definite {
+                                log::info!("all properties are definite, stopping");
                                 return Ok(())
                             }
 
