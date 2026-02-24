@@ -42,6 +42,7 @@
         packages = {
           default = bombadil.bin;
           types = bombadil.types;
+          manual = pkgs.callPackage ./docs/manual/default.nix { };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           aarch64-linux = bombadilAarch64.bin;
@@ -57,6 +58,7 @@
         };
 
         checks = {
+
           inherit (bombadil) clippy fmt types;
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
@@ -100,6 +102,16 @@
               CHROME = pkgs.lib.getExe pkgs.chromium;
             }
           );
+
+          manual = pkgs.mkShell {
+            inputsFrom = [ self.packages.${system}.manual ];
+            buildInputs = with pkgs; [
+              watchexec
+              nodePackages.browser-sync
+              nodePackages.concurrently
+            ];
+            OSFONTDIR = "${pkgs.ibm-plex}/share/fonts/opentype";
+          };
         };
       }
     );
