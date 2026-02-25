@@ -59,6 +59,7 @@ No equivalent existed in `antithesishq/main`.
 `#[cfg(test)] mod tests` block with 26 tests total:
 - 19 tests for `sanitize_csp`: SHA-256/384/512 removal, nonce removal, mixed directives, no-script-src passthrough, empty result, multiple hashes with safe value, only-hash directive with other directives, `script-src-elem`, `default-src` fallback stripping (3 cases), `strict-dynamic` removal (3 cases), `report-uri`/`report-to` stripping (3 cases).
 - 7 tests for `build_response_headers`: stripped headers removed, content-type preserved, CSP dropped for Script, CSP sanitized for Document, synthetic etag appended, None headers produce only synthetic etag, non-CSP/non-stripped headers pass through.
+- A `// ── build_response_headers ──…` section separator comment divides the two groups.
 
 No unit tests existed in this file in `antithesishq/main`.
 
@@ -97,11 +98,13 @@ Doc comment corrections on `run_browser_test`: "facitiliate" → "facilitate", `
 
 ### Change 8: Four new integration tests
 
+All four use `Duration::from_secs(20)` as the test timeout — a tier not present in `antithesishq/main` (which uses 3s, 5s, 30s, and 120s).
+
 **`test_external_module_script`**: Default router, `Duration::from_secs(20)`. HTML fixture uses `<script type="module" src="...">`. Spec checks `#result` text becomes `"LOADED"` within 10s.
 
 **`test_compressed_script`**: Custom router with `CompressionLayer::new()`. `Duration::from_secs(20)`. Calls `run_browser_test_with_router`. Spec checks `#result` text becomes `"LOADED"` within 10s.
 
-**`test_csp_script`**: Custom router with `middleware::from_fn` injecting `content-security-policy: script-src 'sha256-sRoPO3cqhmVEQTMEK66eATz8J/LJdrvqrNVuMKzGgSM='` on all responses. `Duration::from_secs(20)`. Multi-line `//` comment block explaining the test rationale. Spec checks `#result` text becomes `"LOADED"` within 10s.
+**`test_csp_script`**: Custom router with `middleware::from_fn` injecting `content-security-policy: script-src 'sha256-sRoPO3cqhmVEQTMEK66eATz8J/LJdrvqrNVuMKzGgSM='` on all responses. `Duration::from_secs(20)`. Multi-line `//` comment block (7 lines) explaining the test rationale. Spec checks `#result` text becomes `"LOADED"` within 10s.
 
 **`test_csp_document_directives_preserved`**: Custom router with `middleware::from_fn` injecting a mixed CSP (`script-src 'unsafe-inline' 'self' 'sha256-AAAA…'; img-src 'self'`) on all responses. `Duration::from_secs(20)`. Multi-line `//` comment block (11 lines) explaining the test rationale, expected outcomes with and without the fix, and the mechanism. HTML fixture listens for `securitypolicyviolation` and sets `#result` to `"CSP_ACTIVE"`. Spec checks `#result` text becomes `"CSP_ACTIVE"` within 10s.
 
@@ -150,11 +153,20 @@ Development environment configuration for aarch64 Linux. Not a code change — s
 
 ---
 
+## `AGENTS.md`
+
+### Change 13: Appended sandbox build environment section
+
+Added a "Sandboxed Build Environment" section with instructions for building outside Nix: `CARGO_TARGET_DIR`, `RUST_MIN_STACK`, `.cargo/config.toml`, `esbuild`, and Chromium path.
+
+No other content in `AGENTS.md` was modified.
+
+---
+
 ## Non-code files added
 
 Workflow artifacts not shipped with the binary:
 
-- `AGENTS.md` — Sandbox build environment notes
 - `PATTERNS.md` — Project conventions
 - `SECURITY.md` — Security issue tracking
 - `SECURITY_ANALYSIS.md` — Detailed problem analysis

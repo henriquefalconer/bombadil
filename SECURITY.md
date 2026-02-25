@@ -14,7 +14,7 @@ The following issues from prior analyses have been addressed in the current code
 
 ### Hash-only `script-src` removal widens the security model
 
-When all values in a `script-src` directive are hashes/nonces/`strict-dynamic`, the directive is omitted entirely. The browser falls back to `default-src`, which may be more permissive. This is inherent to Bombadil's approach: instrumentation changes script bodies, making hash-based trust impossible without computing new hashes at CSP-emission time. The weakening only applies during the test session.
+When all values in a `script-src` directive are hashes/nonces/`strict-dynamic`, the directive is omitted entirely. The browser falls back to `default-src`, which may be more permissive. This is inherent to Bombadil's approach: instrumentation changes script bodies, making hash-based trust impossible without computing new hashes at CSP-emission time. The weakening only applies during the test session. Note: `antithesishq/main` had an even wider gap — all headers (including CSP) were dropped entirely.
 
 ### `content-security-policy-report-only` identical treatment
 
