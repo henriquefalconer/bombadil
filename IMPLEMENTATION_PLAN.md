@@ -2,22 +2,21 @@
 
 ## TODO: Strip Stale Transport Headers After Instrumentation
 
-**Problem:** The header forwarding fix in `src/browser/instrumentation.rs` (lines 163-176) forwards all original response headers (minus `etag`), but several headers describe properties of the **original** body that become incorrect after instrumentation transforms it:
+**Problem:** The header forwarding in `src/browser/instrumentation.rs` (lines 163-176) forwards all original response headers (minus `etag`), but several headers describe properties of the **original** body that become incorrect after instrumentation transforms it:
 
-- **`Content-Length`**: Original body size ≠ instrumented body size. Could cause truncated loads.
-- **`Content-Encoding`**: CDP's `GetResponseBody` returns decoded content. Forwarding `Content-Encoding: gzip` tells Chrome the body is still compressed → garbage.
-- **`Transfer-Encoding`**: `fulfillRequest` delivers body as a single base64 blob. Forwarding `Transfer-Encoding: chunked` is incorrect.
+- **`Content-Length`**: Original body size ≠ instrumented body size → truncated loads
+- **`Content-Encoding`**: CDP's `GetResponseBody` returns decoded content → forwarding `gzip` causes garbage
+- **`Transfer-Encoding`**: `fulfillRequest` delivers body as a single blob → `chunked` is incorrect
 
-### Code Change
+### Changes Required
 
-In `src/browser/instrumentation.rs:168-169`, expand the filter from:
+#### 1. Fix: `src/browser/instrumentation.rs` (line 168-169)
 
+Expand the filter from:
 ```rust
 .filter(|h| !h.name.eq_ignore_ascii_case("etag"))
 ```
-
-to also strip `content-length`, `content-encoding`, and `transfer-encoding` (all case-insensitive). For example:
-
+to:
 ```rust
 .filter(|h| {
     !["etag", "content-length", "content-encoding", "transfer-encoding"]
@@ -26,40 +25,71 @@ to also strip `content-length`, `content-encoding`, and `transfer-encoding` (all
 })
 ```
 
-### Test: Integration test with gzip compression
+#### 2. Add `compression-gzip` feature to `tower-http` in `Cargo.toml`
 
-The test must demonstrate that **before the fix** the problem occurs, and **after the fix** it doesn't.
+```toml
+tower-http = { version = "0.6.8", features = ["fs", "compression-gzip"] }
+```
 
-1. **Add `compression-gzip` feature** to `tower-http` in `[dev-dependencies]` in `Cargo.toml`:
-   ```toml
-   tower-http = { version = "0.6.8", features = ["fs", "compression-gzip"] }
-   ```
+#### 3. Create test fixture `tests/compressed-script/index.html`
 
-2. **Create test fixture** `tests/compressed-script/index.html`:
-   ```html
-   <!DOCTYPE html>
-   <html>
-   <body>
-     <h1 id="result">WAITING</h1>
-     <script src="/compressed-script/script.js"></script>
-   </body>
-   </html>
-   ```
+```html
+<!DOCTYPE html>
+<html>
+<body>
+  <h1 id="result">WAITING</h1>
+  <script src="/compressed-script/script.js"></script>
+</body>
+</html>
+```
 
-3. **Create test fixture** `tests/compressed-script/script.js`:
-   ```js
-   document.getElementById("result").textContent = "LOADED";
-   ```
+#### 4. Create test fixture `tests/compressed-script/script.js`
 
-4. **Refactor `run_browser_test`** to accept an optional custom `Router` parameter. Extract the router creation so the new test can pass a router with `CompressionLayer` while existing tests continue using the default `ServeDir` router unchanged. Alternatively, extract a helper `run_browser_test_with_router` that takes a `Router` argument, and have the existing `run_browser_test` call it with the default router.
+```js
+document.getElementById("result").textContent = "LOADED";
+```
 
-5. **Add test function** `test_compressed_script` in `tests/integration_tests.rs`:
-   - Builds a router: `Router::new().fallback_service(ServeDir::new("./tests")).layer(CompressionLayer::new())`
-   - Uses a custom spec that extracts `#result` textContent and asserts `eventually(() => resultText.current === "LOADED").within(10, "seconds")`
-   - Expects `Expect::Success`
-   - **Before fix**: Chrome receives `Content-Encoding: gzip` with plaintext body → script fails → `#result` stays `"WAITING"` → timeout
-   - **After fix**: `Content-Encoding` is stripped → script loads → `#result` becomes `"LOADED"` → success
+#### 5. Refactor test harness in `tests/integration_tests.rs`
+
+Extract a `run_browser_test_with_router` function that takes a `Router` parameter. The existing `run_browser_test` calls it with the default `ServeDir` router. This lets the compression test pass a router with `CompressionLayer`.
+
+Specifically:
+- Rename current `run_browser_test` to `run_browser_test_with_router`, adding a `router: Router` parameter (replacing the internal `Router::new().fallback_service(ServeDir::new("./tests"))`)
+- Create new `run_browser_test` that calls `run_browser_test_with_router` with the default router
+- All existing tests remain unchanged
+
+#### 6. Add `test_compressed_script` integration test
+
+```rust
+use tower_http::compression::CompressionLayer;
+
+#[tokio::test]
+async fn test_compressed_script() {
+    let app = Router::new()
+        .fallback_service(ServeDir::new("./tests"))
+        .layer(CompressionLayer::new());
+    run_browser_test_with_router(
+        "compressed-script",
+        Expect::Success,
+        Duration::from_secs(10),
+        Some(r#"
+import { extract, eventually } from "@antithesishq/bombadil";
+export { scroll } from "@antithesishq/bombadil/defaults";
+
+const resultText = extract((state) => state.document.body?.querySelector("\#result")?.textContent ?? null);
+
+export const compressed_script_loads = eventually(
+  () => resultText.current === "LOADED"
+).within(10, "seconds");
+"#),
+        app,
+    ).await;
+}
+```
+
+**Validation:** Before the fix, Chrome receives `Content-Encoding: gzip` with plaintext body → script fails → `#result` stays `"WAITING"` → timeout. After the fix, `Content-Encoding` is stripped → script loads → `#result` becomes `"LOADED"` → success.
 
 ## Completed
 
 - Fix external module script MIME type issue (forwarding response headers in `Fetch.fulfillRequest`)
+- Test for external module script (`test_external_module_script`)
