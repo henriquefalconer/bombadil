@@ -220,12 +220,20 @@ pub async fn instrument_js_coverage(page: Arc<Page>) -> Result<()> {
                                             network::ResourceType::Script => {
                                                 None
                                             }
-                                            _ => sanitize_csp(&h.value).map(
-                                                |v| fetch::HeaderEntry {
-                                                    name: h.name.clone(),
-                                                    value: v,
-                                                },
-                                            ),
+                                            network::ResourceType::Document => {
+                                                sanitize_csp(&h.value).map(
+                                                    |v| fetch::HeaderEntry {
+                                                        name: h.name.clone(),
+                                                        value: v,
+                                                    },
+                                                )
+                                            }
+                                            _ => {
+                                                // CSP on non-Script, non-Document
+                                                // resources is unexpected; preserve as-is
+                                                // rather than silently dropping.
+                                                Some(h.clone())
+                                            }
                                         }
                                     } else {
                                         Some(h.clone())
@@ -301,31 +309,69 @@ fn source_id(headers: HashMap<String, String>, body: &str) -> SourceId {
 ///
 /// Removes `'sha256-…'`, `'sha384-…'`, `'sha512-…'`, and `'nonce-…'` values from
 /// `script-src` and `script-src-elem` directives — the only directives whose hash
-/// values are invalidated by script body instrumentation. All other directives are
-/// forwarded unchanged.
+/// values are invalidated by script body instrumentation. When neither `script-src` nor
+/// `script-src-elem` is present, browsers fall back to `default-src` for script-loading
+/// decisions, so `default-src` hashes/nonces are stripped in that case too.
 ///
-/// If a `script-src` or `script-src-elem` directive contained only hash or nonce values,
-/// the directive is omitted entirely rather than left empty (an empty `script-src` would
-/// block all scripts, which is worse than having no directive at all, since the browser
-/// would fall back to `default-src`).
+/// `'strict-dynamic'` is also removed from any directive whose hashes/nonces are
+/// stripped: without a trust anchor it has no effect and would block all scripts.
+///
+/// `report-uri` and `report-to` directives are stripped entirely to prevent
+/// instrumentation-triggered mutations from sending false-positive CSP violation
+/// reports to the application's reporting endpoint.
+///
+/// If a processed directive contained only hash/nonce values (plus optionally
+/// `'strict-dynamic'`), it is omitted entirely rather than left empty.
 ///
 /// Returns `None` when every directive was stripped (the caller should omit the header).
 fn sanitize_csp(csp_value: &str) -> Option<String> {
+    // Collect non-empty directives and detect whether any explicit script-src /
+    // script-src-elem directive is present (needed for default-src fallback logic).
+    let directives: Vec<&str> = csp_value
+        .split(';')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .collect();
+
+    let has_script_src = directives.iter().any(|d| {
+        let lower = d.to_lowercase();
+        lower.starts_with("script-src ")
+            || lower == "script-src"
+            || lower.starts_with("script-src-elem ")
+            || lower == "script-src-elem"
+    });
+
     let mut result: Vec<String> = Vec::new();
-    for directive in csp_value.split(';') {
-        let directive = directive.trim();
-        if directive.is_empty() {
+
+    for directive in directives {
+        let lower = directive.to_lowercase();
+
+        // Strip report-uri / report-to entirely — instrumentation activity must not
+        // trigger false-positive violation reports to the application's endpoint.
+        let directive_name_end =
+            lower.find(char::is_whitespace).unwrap_or(lower.len());
+        let directive_name = &lower[..directive_name_end];
+        if directive_name == "report-uri" || directive_name == "report-to" {
             continue;
         }
-        let lower = directive.to_lowercase();
+
         let is_script_src = lower.starts_with("script-src ")
             || lower == "script-src"
             || lower.starts_with("script-src-elem ")
             || lower == "script-src-elem";
-        if is_script_src {
+
+        // Apply hash/nonce stripping to default-src only when no explicit script-src /
+        // script-src-elem is present (browser would fall back to default-src for scripts).
+        let is_default_src_fallback = !has_script_src
+            && (lower.starts_with("default-src ") || lower == "default-src");
+
+        if is_script_src || is_default_src_fallback {
             let mut parts = directive.splitn(2, char::is_whitespace);
             let name = parts.next().unwrap_or("");
             let values_str = parts.next().unwrap_or("").trim();
+
+            // Remove hashes, nonces, and 'strict-dynamic' (which is meaningless
+            // without a trust anchor and blocks all scripts when left alone).
             let filtered: Vec<&str> = values_str
                 .split_whitespace()
                 .filter(|v| {
@@ -334,16 +380,19 @@ fn sanitize_csp(csp_value: &str) -> Option<String> {
                         && !lv.starts_with("'sha384-")
                         && !lv.starts_with("'sha512-")
                         && !lv.starts_with("'nonce-")
+                        && lv != "'strict-dynamic'"
                 })
                 .collect();
+
             if !filtered.is_empty() {
                 result.push(format!("{} {}", name, filtered.join(" ")));
             }
-            // If all values were hashes/nonces, omit the directive entirely.
+            // If all values were hashes/nonces/'strict-dynamic', omit the directive.
         } else {
             result.push(directive.to_string());
         }
     }
+
     if result.is_empty() {
         None
     } else {
@@ -431,6 +480,92 @@ mod tests {
         assert_eq!(
             sanitize_csp("script-src-elem 'sha256-abc' 'unsafe-inline'"),
             Some("script-src-elem 'unsafe-inline'".to_string())
+        );
+    }
+
+    // Item 1: default-src fallback stripping
+
+    #[test]
+    fn sanitize_csp_default_src_hash_stripped_when_no_script_src() {
+        // No script-src/script-src-elem present → default-src hashes must be stripped.
+        assert_eq!(
+            sanitize_csp("default-src 'sha256-abc' 'self'"),
+            Some("default-src 'self'".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_default_src_not_touched_when_script_src_present() {
+        // Explicit script-src is present → default-src is NOT touched.
+        assert_eq!(
+            sanitize_csp(
+                "default-src 'sha256-abc' 'self'; script-src 'unsafe-inline'"
+            ),
+            Some(
+                "default-src 'sha256-abc' 'self'; script-src 'unsafe-inline'"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_default_src_only_hashes_omitted_when_no_script_src() {
+        // All values are hashes → directive is omitted entirely.
+        assert_eq!(sanitize_csp("default-src 'sha256-abc'"), None);
+    }
+
+    // Item 2: strict-dynamic removal without trust anchor
+
+    #[test]
+    fn sanitize_csp_strict_dynamic_removed_with_nonce() {
+        // Nonce stripped → 'strict-dynamic' loses its trust anchor and is removed too.
+        assert_eq!(
+            sanitize_csp("script-src 'nonce-abc' 'strict-dynamic'"),
+            None
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_strict_dynamic_removed_keeps_other_values() {
+        assert_eq!(
+            sanitize_csp("script-src 'nonce-abc' 'strict-dynamic' 'self'"),
+            Some("script-src 'self'".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_strict_dynamic_removed_with_hash() {
+        assert_eq!(
+            sanitize_csp("script-src 'sha256-abc' 'strict-dynamic'"),
+            None
+        );
+    }
+
+    // Item 3: report-uri / report-to stripping
+
+    #[test]
+    fn sanitize_csp_strips_report_uri() {
+        assert_eq!(
+            sanitize_csp(
+                "script-src 'sha256-abc' 'self'; report-uri /csp-report"
+            ),
+            Some("script-src 'self'".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_strips_report_to() {
+        assert_eq!(
+            sanitize_csp("script-src 'self'; report-to csp-group"),
+            Some("script-src 'self'".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_strips_both_report_directives() {
+        assert_eq!(
+            sanitize_csp("default-src 'self'; report-uri /r; report-to g"),
+            Some("default-src 'self'".to_string())
         );
     }
 }
