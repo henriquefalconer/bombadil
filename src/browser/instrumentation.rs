@@ -166,11 +166,21 @@ pub async fn instrument_js_coverage(page: Arc<Page>) -> Result<()> {
                                 .iter()
                                 .flatten()
                                 .filter(|h| {
+                                    // Strip headers that become stale after
+                                    // instrumentation: body-dependent headers
+                                    // (length, encoding, CSP content hashes)
+                                    // are invalidated when the script body is
+                                    // rewritten. HSTS is also stripped to
+                                    // prevent pinning HTTPS on localhost, which
+                                    // would break subsequent test runs.
                                     ![
                                         "etag",
                                         "content-length",
                                         "content-encoding",
                                         "transfer-encoding",
+                                        "content-security-policy",
+                                        "content-security-policy-report-only",
+                                        "strict-transport-security",
                                     ]
                                     .iter()
                                     .any(
