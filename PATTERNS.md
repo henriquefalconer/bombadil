@@ -1,55 +1,37 @@
-# Code Patterns and Conventions
+# Integration Tests
 
-Rules derived from studying the patterns established in the upstream codebase (`antithesishq/main`). Following these ensures new code stays consistent with the project and avoids the deviations documented here.
+- Test functions do not carry `///` doc comments. The test name and the spec string inside the body should be self-explanatory. Rationale for a code change belongs at the change site in production code or in the commit message.
+- When a test provides a custom spec and needs interaction to keep the runner loop cycling, export `clicks` as the baseline action. Only export a different action set when the test specifically exercises that action type.
+- Use `TEST_TIMEOUT_SECONDS` (120s) as the test timeout unless there is a concrete reason for a shorter bound. When a shorter bound is used, it must be at least 2x any LTL `.within()` value in the spec, because the harness treats `Timeout` as `Success` for `Expect::Success` tests. Prefer reusing existing timeout tiers (3s, 5s, 30s, 120s) over introducing new ones.
+- When refactoring a shared helper into a wrapper and a lower-level implementation, the wrapper (the function most tests call) retains the full doc comment. The lower-level function gets a brief one-liner referencing the wrapper.
+- If you modify any part of a doc comment, verify the entire comment for factual correctness. Fixing a typo while leaving a wrong URL or outdated description signals carelessness.
+- Test HTML fixtures should use the minimal structure needed for the test. Do not add `<head>`, `<title>`, or other elements unless the test specifically exercises them.
 
----
+# Doc Comments
 
-## Integration Tests
+- Doc comments (`///`) go on public API surfaces, shared helpers, and constants whose purpose isn't obvious from the name. Do not add doc comments to test functions, private one-off helpers, or self-explanatory code.
+- When a doc comment references a URL path, code path, or concrete value, verify it matches the actual implementation. Documentation that contradicts the code is worse than no documentation.
 
-### Document the fix, not the test
+# Constants and Magic Values
 
-Test functions do not carry `///` doc comments. The test name and the spec string inside the body should be self-explanatory. If the rationale behind a code change needs to be preserved in source, place it at the change site (e.g., a `//` comment next to the relevant logic in production code), not on the test function. The commit message is the right place for the full narrative.
+- Values that control behavior (header lists, timeouts, size limits, namespace strings) should be defined as named `const` or `static` items at module or function level, not inline in closures or expressions. This makes them discoverable, referenceable, and testable.
+- Follow the existing naming convention: `SCREAMING_SNAKE_CASE` for constants.
 
-**Upstream evidence:** All 11 test functions in the upstream have zero doc comments. The only doc comments in the test file are on the shared helper (`run_browser_test`) and the semaphore constant.
+# Header Handling
 
-### Use `clicks` as the minimal action export in custom specs
+- When constructing response headers for `Fetch.fulfillRequest`, document why each header is stripped. The strip list is a security-sensitive surface — every entry and every omission should have a stated reason.
+- CDP's `Fetch.fulfillRequest` uses replacement semantics: providing `responseHeaders` replaces the entire original header set. Omitting a header is equivalent to actively removing it.
+- Any header whose validity depends on body content (hashes, lengths, encodings, integrity digests) becomes stale after instrumentation and must be accounted for in the strip list.
+- Prefer failing closed over failing open: when in doubt about whether a header is safe to forward after body modification, strip it.
 
-When a test provides a custom spec and needs any form of interaction to keep the runner loop cycling, export `clicks` as the baseline. Only export a different action set when the test specifically exercises that action type (e.g., `back` for back-navigation tests, `inputs` for text input tests).
+# Error Handling
 
-**Upstream evidence:** Every upstream custom spec exports `clicks` as its baseline (`test_random_text_input`, `test_counter_state_machine`, `test_back_from_non_html`). No upstream test exports `scroll` as a standalone action.
+- Use `anyhow::Result` with `.context()` for application-level code. Use domain-specific error enums (like `SpecificationError`) only when callers need to match on error variants.
+- Reserve `.expect()` and `.unwrap()` for cases where failure indicates a programmer error, not a runtime condition.
+- When an interception or instrumentation fails, continue the request uninstrumented rather than crashing. Log the failure at `warn` level.
 
-### Default to `TEST_TIMEOUT_SECONDS` unless there is a specific reason for a shorter bound
+# Imports
 
-The constant `TEST_TIMEOUT_SECONDS` (120s) is the standard test timeout. Use it unless the test has a concrete reason for a shorter bound (e.g., the test is expected to finish in under a second and a long timeout would waste CI time on a hang).
-
-If a shorter bound is used, ensure it is at least 2x any LTL `.within()` value in the spec. The test harness treats `Timeout` as `Success` for `Expect::Success` tests, so if the test timeout is equal to or shorter than the LTL bound, the test can pass vacuously when the LTL engine hasn't had time to produce a violation.
-
-Prefer reusing existing timeout tiers (3s, 5s, 30s, 120s) over introducing new ones.
-
-**Upstream evidence:** `test_back_from_non_html` uses 30s test / 20s LTL (1.5x). `test_random_text_input` uses 120s test / 10s LTL (12x). No upstream test has a test timeout equal to its LTL `.within()` bound.
-
-### The helper that test authors call carries the documentation
-
-When refactoring a shared helper into a higher-level wrapper and a lower-level implementation, the wrapper (the function most tests call) retains the full doc comment. The lower-level function gets a brief one-liner referencing the wrapper.
-
-**Upstream evidence:** The single `run_browser_test` function carried the doc comment explaining the two-server setup and URL conventions. All tests called this one function directly.
-
-### If you modify any part of a doc comment, verify the entire comment
-
-Touching a comment signals that you have read it. Leaving a known inaccuracy after modifying adjacent text undermines trust in the documentation. If you change one line of a doc comment, review the rest for factual correctness.
-
----
-
-## Header Handling (`src/browser/instrumentation.rs`)
-
-### Prefer an explicit rationale for each forwarded or stripped header
-
-When constructing response headers for `Fetch.fulfillRequest`, the choice of which headers to forward and which to strip has security and correctness implications. Each header in the strip list should have a documented reason (e.g., `content-encoding` is stripped because CDP's `GetResponseBody` returns decompressed content). When adding a new header to the list or removing one, state why.
-
-### Be aware that `Fetch.fulfillRequest` uses replacement semantics
-
-CDP does not merge `responseHeaders` with the original response headers. Providing `responseHeaders` replaces the entire header set. This means omitting a header is equivalent to actively removing it from the response the browser sees.
-
-### Consider that instrumentation changes the body
-
-Any header whose validity depends on the body content (hashes, lengths, encodings, CSP script digests) becomes stale after instrumentation. The strip list should account for all such headers, not just transport-layer ones.
+- Alias `serde_json` as `json` everywhere: `use serde_json as json;`.
+- Use `::` prefix to disambiguate crate names from local modules (e.g., `use ::url::Url;`).
+- Group imports without blank lines between groups, ordering: std, external crates, internal modules.

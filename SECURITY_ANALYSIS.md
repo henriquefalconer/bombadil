@@ -1,159 +1,206 @@
-# Security Analysis: Header Forwarding Fix
+# Security Analysis — Fundamental Problems and Risky Assumptions
 
-Complete analysis of fundamental problems and risky assumptions in the header forwarding changes introduced in `main` relative to `antithesishq/main`.
+Analysis of the code added in `main` relative to `antithesishq/main`, covering header forwarding in `src/browser/instrumentation.rs` and supporting test infrastructure.
 
 ---
 
-## Fundamental Problems and Risky Assumptions
+## Methodology
 
-### P1. The stripped-header list may be incomplete
+Each item below was evaluated through three lenses:
+1. **Is it a direct result of the new code?** (vs. pre-existing in antithesishq/main)
+2. **Does it contradict established patterns** in antithesishq/main?
+3. **Can it cause real harm** if deployed as-is?
 
-The filter strips `etag`, `content-length`, `content-encoding`, `transfer-encoding`. HTTP defines additional hop-by-hop and transport-layer headers that become invalid after CDP decompresses and Bombadil re-instruments the body:
+Items that are pre-existing, follow established patterns, or have negligible real-world impact are noted as such and not escalated.
 
-- `Content-Range` (meaningless if the original response was a 206 partial)
-- `Connection` and headers it names (RFC 7230 hop-by-hop)
-- `Keep-Alive`, `TE`, `Trailer`, `Upgrade` (hop-by-hop per spec)
-- `Content-Security-Policy` / `Content-Security-Policy-Report-Only` (hash/nonce directives become invalid after instrumentation changes the body)
-- `Strict-Transport-Security` (could pin HSTS on localhost during testing)
+---
 
-**Assessment: Direct result of the new code. Cannot be disregarded.**
+## Fundamental Problem 1: Denylist Header Filtering
 
-The upstream forwarded zero headers (`// TODO: forward headers`), so there was nothing problematic to forward. The new code introduced the decision of which headers to forward and which to strip. The correctness and completeness of that filter is the new code's responsibility.
+**Classification:** Direct result of new code. Cannot be disregarded.
 
-### P2. Test timeout equals LTL timeout, creating a race
+### Description
 
-Both new tests use `Duration::from_secs(10)` for the tokio test timeout and `.within(10, "seconds")` for the LTL property. The test harness treats `Timeout` as `Success`:
+The new code forwards all original response headers except a hardcoded list of 7 names (`etag`, `content-length`, `content-encoding`, `transfer-encoding`, `content-security-policy`, `content-security-policy-report-only`, `strict-transport-security`). This is a denylist (blocklist) approach.
+
+### Assumption
+
+That the 7 headers listed are the complete set of headers whose validity depends on body content or whose presence causes problems after instrumentation.
+
+### Why This Is Risky
+
+HTTP headers are an open namespace. Servers, CDNs, reverse proxies, and frameworks routinely add custom or newer standard headers that depend on body content. A denylist cannot anticipate these. Specific examples of headers not in the strip list:
+
+- **`digest` / `repr-digest`** (RFC 9530): Contains a cryptographic hash of the response body. If a CDN or proxy adds this, the instrumented body won't match, and downstream integrity checks will fail silently or cause hard-to-diagnose errors.
+- **`content-range`**: If a response were ever 206 Partial Content that slipped through (the 200-only guard helps but edge cases exist with some CDPs), the range would be wrong.
+- **`x-content-type-options: nosniff`**: While not body-dependent, its interaction with MIME handling could matter when the instrumented response changes content characteristics.
+- **Custom CDN headers** (e.g., `cf-cache-status`, `x-cache`, `x-amz-content-sha256`): Some of these carry body-dependent checksums.
+
+### Consequences If Deployed
+
+1. **Silent integrity failures**: A production site behind a CDN that adds `repr-digest` headers would see Bombadil forward stale digests. Downstream proxies or service workers that verify these would reject the response, causing scripts to fail to load with no clear error message pointing to Bombadil.
+2. **Cache poisoning risk**: If `vary`, `age`, or CDN-specific cache headers interact with the stale `etag` and missing `content-length`, caches may store the instrumented version keyed incorrectly, serving it to non-Bombadil requests in shared cache scenarios.
+3. **Growing maintenance burden**: Each new body-dependent header standard requires updating the denylist. Forgetting to do so creates a latent bug.
+
+### Alternative Considered
+
+An allowlist approach (only forward known-safe headers like `content-type`, `set-cookie`, `cache-control`, `access-control-*`) would be safer — unknown headers are dropped by default, failing closed rather than open. The tradeoff is that legitimate headers might be lost, but in Bombadil's context (testing tool, not production proxy), this is acceptable.
+
+---
+
+## Fundamental Problem 2: CSP Stripping Masks Application-Level CSP Issues
+
+**Classification:** Direct result of new code. Should be evaluated carefully but may be acceptable with caveats.
+
+### Description
+
+The code strips `content-security-policy` and `content-security-policy-report-only` headers entirely. This is necessary because instrumentation changes script bodies, breaking CSP hash-based allowlists.
+
+### Assumption
+
+That stripping CSP entirely is acceptable because Bombadil is a testing tool and the CSP would only block Bombadil's instrumentation, not reveal real application bugs.
+
+### Why This Is Risky
+
+CSP is a defense-in-depth mechanism. By stripping it entirely:
+
+1. **XSS vulnerabilities in the tested application become invisible during Bombadil testing.** If the app has a CSP that would block an XSS vector, Bombadil's testing won't surface the fact that removing CSP opens the app to XSS.
+2. **The tested application's behavior changes.** Some applications use CSP `report-uri` or `report-to` to send violation reports. Stripping CSP means the application's violation reporting code path is never exercised during Bombadil testing.
+3. **`script-src 'unsafe-inline'` detection is lost.** If an app relies on CSP to prevent inline script execution and Bombadil strips that, the app may behave differently (inline scripts that would normally be blocked now execute).
+
+### Consequences If Deployed
+
+For most Bombadil use cases (fuzzing UI interactions), this is acceptable — Bombadil's purpose is to find property violations, not CSP misconfigurations. However, if a user writes a property that depends on CSP behavior (e.g., testing that certain scripts are blocked), Bombadil would silently make that property untestable.
+
+### Mitigation
+
+This is a known tradeoff inherent to instrumentation-based tools. The current approach is pragmatic. A future improvement could selectively modify CSP (e.g., add Bombadil's instrumentation script hashes to the allowlist rather than stripping the entire header), but this is significantly more complex.
+
+---
+
+## Fundamental Problem 3: HSTS Stripping Rationale Is Test-Specific
+
+**Classification:** Direct result of new code. Acceptable but the code comment overstates the scope.
+
+### Description
+
+`strict-transport-security` is stripped with the comment "prevent pinning HTTPS on localhost, which would break subsequent test runs."
+
+### Assumption
+
+That HSTS only matters in the test context (localhost) and stripping it has no consequences for non-test usage.
+
+### Why This Merits Attention
+
+The stripping code runs in production code (`src/browser/instrumentation.rs`), not in test infrastructure. When Bombadil is used against real sites:
+
+1. The browser won't pin HSTS for the target domain during testing. This is generally fine (Bombadil doesn't persist browser state), but if `--user-data-directory` is shared across runs, HSTS state from the real site would normally accumulate.
+2. More importantly, the comment's rationale ("localhost") is specific to tests but the code runs for all targets. The comment should reflect the general case: "HSTS is stripped because Bombadil replaces responses via CDP and the HSTS directive would apply to Bombadil's interception endpoint, not the real server."
+
+### Consequences If Deployed
+
+Negligible real-world impact. HSTS stripping in a testing tool is harmless. The only concern is comment accuracy for maintainability.
+
+---
+
+## Fundamental Problem 4: Test Timeout / LTL `.within()` Ratio
+
+**Classification:** Direct result of new code. Pattern deviation from antithesishq/main.
+
+### Description
+
+The three new tests all use `Duration::from_secs(20)` as the test timeout and `.within(10, "seconds")` as the LTL bound. This is a 2.0x ratio.
+
+### Assumption
+
+That 2x is sufficient headroom between the LTL bound and the test timeout.
+
+### Why This Is Risky
+
+The test harness treats `Timeout` as `Success` for `Expect::Success` tests. If the test times out before the LTL engine can fully evaluate the property, the test passes vacuously — it never actually verified anything.
+
+In antithesishq/main:
+- `test_back_from_non_html`: 30s test / 20s LTL = 1.5x (the lowest ratio upstream)
+- `test_random_text_input`: 120s test / 10s LTL = 12x
+
+The new tests at 2.0x are within the existing range but on the tighter side. Under CI resource contention (slow I/O, CPU throttling), browser startup alone can take 5-10 seconds, leaving minimal time for the LTL engine to cycle.
+
+### Consequences If Deployed
+
+Tests could pass in CI without actually exercising the property. This wouldn't cause production bugs but would create false confidence in test coverage. The fix is simple: use `TEST_TIMEOUT_SECONDS` (120s) as the test timeout, giving a 12x ratio.
+
+---
+
+## Fundamental Problem 5: Hardcoded CSP Hash Couples Test Fixture to Test Code
+
+**Classification:** Direct result of new code. Minor but worth noting.
+
+### Description
+
+`test_csp_script` hardcodes the SHA-256 hash of `tests/csp-script/script.js` in the middleware:
 
 ```rust
-(Outcome::Timeout, Expect::Success) => {}  // passes silently
+"script-src 'sha256-sRoPO3cqhmVEQTMEK66eATz8J/LJdrvqrNVuMKzGgSM='"
 ```
 
-The tokio clock and the LTL step clock are independent. If the runner loop is slow (slow page load, slow CDP, slow CI), the LTL clock falls behind and the tokio timer fires first, causing the test to pass without the LTL property ever reaching a conclusion.
+### Assumption
 
-**Assessment: Direct result of the new code. Cannot be disregarded.**
+That the content of `script.js` won't change.
 
-No existing upstream test has this race. All upstream tests with `.within()` bounds use a test timeout strictly greater than the LTL bound (e.g., `test_back_from_non_html`: 30s test / 20s LTL).
+### Why This Is Risky
 
-### P3. When `response_headers` is `None`, only an `etag` is sent
+If someone modifies `script.js` (even adding a newline), the hash no longer matches. The test would still pass because Bombadil strips CSP regardless, but it would no longer be testing the intended scenario (CSP hash blocking an instrumented script). The test becomes a tautology.
 
-If `event.response_headers` is `None`, the `.iter().flatten()` chain yields nothing. The fulfilled response would contain only the synthetic `etag` — no `Content-Type`, no `Cache-Control`, nothing else. Chrome could reject the response (especially for ES modules requiring a valid MIME type).
+### Consequences If Deployed
 
-**Assessment: Can be disregarded.**
-
-The upstream code always sent only `etag` for every response, regardless of whether headers were present. The new code is strictly better: it forwards what's available and falls back to the same etag-only behavior when there's nothing. Bombadil intercepts at `RequestStage::Response` (line 23), so `response_headers` is populated by CDP in practice. The existing content-type detection code (line 91-104) already treats `None` headers as a theoretical edge case with `.as_ref().and_then()`.
-
-### P4. `Content-Security-Policy` script hashes become stale
-
-If the original response carries a CSP header with `script-src` hash directives (`sha256-...`), those hashes were computed against the original script body. After instrumentation, the body is different, and Chrome will block the script.
-
-**Assessment: This is a consequence of P1 (incomplete filter). The specific header was already considered there.**
-
-The upstream was already replacing the entire body with instrumented code and sending it with no headers at all. CSP hash mismatches were already a certainty for inline scripts, but for external scripts the upstream accidentally avoided CSP enforcement by dropping all headers. The new code re-introduces CSP enforcement by forwarding the header, making it a regression for CSP-protected apps. See P1 for full consequence analysis.
-
-### P5. `Cache-Control` / caching semantics silently change
-
-The original `etag` is stripped and replaced with `source_id`. Related caching headers (`Cache-Control`, `Last-Modified`, `Expires`, `Age`) are forwarded as-is. A proxy or service worker cache might store the instrumented body keyed by the synthetic etag.
-
-**Assessment: Can be disregarded.**
-
-The upstream already replaced the etag with `source_id` and never forwarded `Cache-Control`. The new code preserves `Cache-Control` (better than before) and still replaces etag (same as before). In the context of a fuzzing tool that instruments every intercepted response, caching coherence is not a goal.
-
-### P6. Non-200 responses skip instrumentation but are not header-audited
-
-The early return for `status != 200` uses `ContinueRequestParams` (pass-through). Redirects (301/302), 304 Not Modified, and partial content (206) all bypass the fix entirely.
-
-**Assessment: Can be disregarded.**
-
-This is pre-existing behavior untouched by the new code. `ContinueRequestParams` is a pass-through that lets the browser handle the response normally, which is correct for non-200 responses.
-
-### P7. Per-header array allocation in the filter
-
-The `["etag", "content-length", "content-encoding", "transfer-encoding"]` array is constructed for each header being filtered.
-
-**Assessment: Can be disregarded.**
-
-Trivially cheap (4-element stack array, 5-20 headers per response). The upstream codebase uses similar inline patterns throughout (e.g., the `eq_ignore_ascii_case` check for content-type detection on line 98).
-
-### P8. No new `Content-Length` is set for the instrumented body
-
-`Content-Length` is stripped but never re-added. CDP's `Fetch.fulfillRequest` must infer the content length from the `body` parameter.
-
-**Assessment: Can be disregarded.**
-
-The upstream also never set `Content-Length`. CDP's `Fetch.fulfillRequest` delivers the body directly to the browser engine — it does not go over HTTP. The `body` parameter is base64-encoded and CDP handles length internally. `Content-Length` is a transport concern that CDP abstracts away.
+No production impact. The test would silently lose its diagnostic value if the fixture changes.
 
 ---
 
-## Summary
+## Risky Assumption 1: `GetResponseBody` Always Returns Decompressed Content
 
-| Problem | Direct result of new code? | Can be disregarded? |
-|---------|---------------------------|-------------------|
-| P1. Incomplete header filter | Yes | **No** |
-| P2. Test timeout = LTL timeout | Yes | **No** |
-| P3. `None` headers → etag only | No (pre-existing) | Yes |
-| P4. CSP hashes stale | Subsumed by P1 | **No** (see P1) |
-| P5. Caching semantics | No (pre-existing) | Yes |
-| P6. Non-200 bypass | No (pre-existing) | Yes |
-| P7. Per-header allocation | No (style only) | Yes |
-| P8. No Content-Length | No (pre-existing) | Yes |
+**Classification:** Pre-existing assumption from antithesishq/main, but newly relevant.
+
+### Description
+
+The code calls `Fetch.getResponseBody` which, per CDP documentation, returns the body after content decoding (i.e., decompressed). The new code strips `content-encoding` based on this assumption.
+
+### Why This Merits Attention
+
+If a future Chromium version or a CDP protocol change altered this behavior (returning compressed content), the instrumentation would try to parse compressed bytes as JavaScript, fail, and fall through to the error handler (which continues the request uninstrumented). This would silently disable coverage instrumentation for compressed scripts.
+
+The `test_compressed_script` test would catch this regression, which is good.
+
+### Assessment
+
+The assumption is well-founded (CDP has documented this behavior since Chrome 64) and the test provides a safety net. Acceptable.
 
 ---
 
-## Consequence Analysis for Non-Disregardable Problems
+## Risky Assumption 2: `response_headers` in `EventRequestPaused` Contains All Response Headers
 
-### P1. Incomplete Header Filter — Consequences in Depth
+**Classification:** Pre-existing structure, newly relied upon.
 
-**What changed semantically:** The upstream sent `responseHeaders: [{"name":"etag","value":"..."}]` — telling Chrome "this response has exactly one header." The new code sends all original headers minus four, telling Chrome "this response has all the original headers (minus transport metadata)." This is a fundamental semantic shift from "discard everything" to "forward everything except a known blocklist."
+### Description
 
-**Silent instrumentation failure on CSP-protected apps:**
+The new code reads `event.response_headers` to forward original headers. This field is `Option<Vec<HeaderEntry>>`.
 
-When a server sends CSP with hash-based or nonce-based `script-src` restrictions:
-1. The hash/nonce was computed for the original script body.
-2. Bombadil replaces the body with an instrumented version.
-3. The original CSP header is forwarded unchanged.
-4. Chrome enforces CSP, finds the mismatch, blocks the instrumented script.
+### Why This Merits Attention
 
-This failure is **silent**: Bombadil navigates, takes actions, records traces, but no JS coverage is collected. A user could complete an entire fuzz campaign against a CSP-protected app with zero meaningful results and no error. CSP violations appear in the browser console but are not JS exceptions or `console.error` calls — they would not trigger `noUncaughtExceptions` or `noConsoleErrors` default properties.
+If `response_headers` is `None` (which the code handles via `.iter().flatten()`), the response gets only the appended `etag` — losing all headers including `content-type`. This regression path matches the old behavior (antithesishq/main only sent `etag`), so it's not worse than before, but it means the fix is not effective for those cases.
 
-The upstream behavior accidentally avoided this by dropping all headers (no CSP header = no CSP enforcement). The new code is a regression for CSP-protected apps.
+### Assessment
 
-**HSTS pinning on localhost:**
+`response_headers` being `None` is unlikely for responses that reach the fulfillment path (they must have a 200 status code, implying a complete response). Acceptable.
 
-If the origin server sends `Strict-Transport-Security`, forwarding it could cause Chrome to pin HSTS for localhost, affecting subsequent test runs or local development.
+---
 
-**The blocklist is inherently fragile:**
+## Items Evaluated and Disregarded
 
-A blocklist means every new problematic header must be discovered and added. An allowlist (forwarding only known-safe headers) would be safer but might miss headers that specific apps need. The current code makes this architectural choice implicitly.
-
-**Interaction with non-200 early return:**
-
-Non-200 responses use `ContinueRequestParams` (pass-through) and never hit the header filter. This is correct for 301/302/304 responses (no body to instrument), but means the two code paths have different header semantics.
-
-**Real-world deployment:**
-- Apps **without CSP hash/nonce**: Fix works correctly. Modules load, compressed scripts work, other headers are benignly preserved. Net improvement.
-- Apps **with CSP hash/nonce**: Fix actively breaks instrumentation. Worse than upstream behavior. Silent failure mode.
-
-### P2. Test Timeout Race — Consequences in Depth
-
-**The two independent clocks:**
-- LTL clock: ticks only when the verifier steps (requires a full runner cycle: state capture, extraction, verification, action).
-- Tokio clock: ticks continuously.
-
-If the runner loop is slow, the LTL clock falls behind. With both timeouts at 10 seconds:
-- The tokio timer fires at wall-clock 10s.
-- The LTL clock may be at 9s or less.
-- `Outcome::Timeout` maps to success.
-- The test passes without the LTL `eventually` ever resolving.
-
-**When this matters most:**
-- Slow CI environments (loaded machines, resource contention) make the runner cycle slower, widening the gap between the two clocks.
-- A regression that breaks script loading would not be caught: the `#result` element stays "WAITING", the LTL property needs its full 10s to produce a violation, but the tokio timeout fires first.
-
-**Comparison with upstream:**
-- `test_back_from_non_html`: 30s test / 20s LTL (10s buffer)
-- `test_counter_state_machine`: 3s test / `always(...)` with no `.within()` (violations on first step, no race possible)
-- `test_random_text_input`: 120s test / 10s LTL (110s buffer)
-
-The new tests are the only ones where both timeouts are equal.
-
-**Practical note:** In the happy path, the script loads in under 1 second. The 10-second values are generous bounds. The race would only trigger when the fix is broken (exactly when detection matters) or under extreme CI load. This makes it a reliability concern for regression detection, not for day-to-day passing tests.
+| Item | Reason for disregarding |
+|------|------------------------|
+| Hardcoded `response_code(200)` | Pre-existing in antithesishq/main; non-200 responses are already handled by early return |
+| No explicit `content-type` header set | The new code actually fixes this by forwarding the original `content-type` |
+| `app.clone()` in `run_browser_test_with_router` | Follows the same pattern as antithesishq/main (which cloned inline); Router cloning is documented as cheap in Axum |
+| Etag duplication risk | The filter strips ALL matching `etag` headers before appending a fresh one; no duplication possible |
+| Header stripping on non-HTML pass-through documents | Stripping `content-encoding` on an already-decompressed body is correct; `content-length` absence is handled by CDP |

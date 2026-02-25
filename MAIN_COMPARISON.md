@@ -1,110 +1,132 @@
-# Comparison: `main` vs `antithesishq/main`
+# Main vs antithesishq/main — Changed Code Only
 
-This document describes **only the code that was altered** in `main` relative to `antithesishq/main`. Nothing that was already present in the upstream is described here.
-
----
-
-## Overview
-
-- `antithesishq/main` is fully contained within `main` (zero commits in upstream that aren't in main)
-- `main` has 15 additional commits on top of the merge base `0e2913d`
-- No files were deleted
-- 4 files were added, 4 files were modified
-
-| Status | File |
-|--------|------|
-| Added | `tests/compressed-script/index.html` |
-| Added | `tests/compressed-script/script.js` |
-| Added | `tests/external-module-script/index.html` |
-| Added | `tests/external-module-script/module.js` |
-| Modified | `src/browser/instrumentation.rs` |
-| Modified | `tests/integration_tests.rs` |
-| Modified | `Cargo.toml` |
-| Modified | `Cargo.lock` |
+This document shows exactly what code was altered in `main` relative to `antithesishq/main`. Nothing from the original codebase is described here — only the additions, modifications, and their immediate context.
 
 ---
 
-## `src/browser/instrumentation.rs` — Header Forwarding Fix
+## Modified Files
 
-### What was removed
+### `src/browser/instrumentation.rs` (lines 158–206)
 
-```rust
-.response_header(fetch::HeaderEntry {
-    name: "etag".to_string(),
-    value: format!("{}", source_id.0),
-})
-// TODO: forward headers
-```
-
-The `.response_header(...)` call (singular) set a single `etag` header. The `// TODO: forward headers` comment acknowledged that all original response headers were being dropped.
-
-### What was added in its place
+**What was there (antithesishq/main):**
 
 ```rust
-.response_headers(
-    event
-        .response_headers
-        .iter()
-        .flatten()
-        .filter(|h| {
-            ![
-                "etag",
-                "content-length",
-                "content-encoding",
-                "transfer-encoding",
-            ]
-            .iter()
-            .any(
-                |name| {
-                    h.name.eq_ignore_ascii_case(name)
-                },
-            )
-        })
-        .cloned()
-        .chain(std::iter::once(fetch::HeaderEntry {
+page.execute(
+    fetch::FulfillRequestParams::builder()
+        .request_id(event.request_id.clone())
+        .body(BASE64_STANDARD.encode(body_instrumented))
+        .response_code(200)
+        .response_header(fetch::HeaderEntry {
             name: "etag".to_string(),
             value: format!("{}", source_id.0),
-        })),
+        })
+        // TODO: forward headers
+        .build()
+        .map_err(|error| {
+            anyhow!(
+                "failed building FulfillRequestParams: {}",
+                error
+            )
+        })?,
 )
 ```
 
-The `.response_headers(...)` call (plural) forwards all original response headers from `event.response_headers`, filtering out four headers by name (case-insensitive), then appends a synthetic `etag` with the computed `source_id`.
+**What replaced it (main):**
 
-### Why each header is stripped
+```rust
+page.execute(
+    fetch::FulfillRequestParams::builder()
+        .request_id(event.request_id.clone())
+        .body(BASE64_STANDARD.encode(body_instrumented))
+        .response_code(200)
+        .response_headers(
+            event
+                .response_headers
+                .iter()
+                .flatten()
+                .filter(|h| {
+                    ![
+                        "etag",
+                        "content-length",
+                        "content-encoding",
+                        "transfer-encoding",
+                        "content-security-policy",
+                        "content-security-policy-report-only",
+                        "strict-transport-security",
+                    ]
+                    .iter()
+                    .any(|name| h.name.eq_ignore_ascii_case(name))
+                })
+                .cloned()
+                .chain(std::iter::once(fetch::HeaderEntry {
+                    name: "etag".to_string(),
+                    value: format!("{}", source_id.0),
+                })),
+        )
+        .build()
+        .map_err(|error| {
+            anyhow!(
+                "failed building FulfillRequestParams: {}",
+                error
+            )
+        })?,
+)
+```
 
-- **`etag`**: Replaced with the synthetic `source_id` value for coverage tracking.
-- **`content-length`**: The instrumented body has a different size than the original.
-- **`content-encoding`**: CDP's `GetResponseBody` returns the already-decompressed body. Forwarding `Content-Encoding: gzip` would cause Chrome to try decompressing plaintext.
-- **`transfer-encoding`**: Not applicable for `Fetch.fulfillRequest` responses (CDP delivers the body directly, not over HTTP).
+**Summary of change:** Replaced `.response_header()` (single etag) with `.response_headers()` (all original headers forwarded, minus a denylist of 7 header names, plus a fresh etag appended). The `// TODO: forward headers` comment was resolved.
 
 ---
 
-## `tests/integration_tests.rs` — Test Infrastructure and New Tests
+### `tests/integration_tests.rs`
 
-### Change 1: Import added
+#### Import additions
 
 ```rust
 // Was:
+use axum::Router;
 use tower_http::services::ServeDir;
 
 // Now:
+use axum::{
+    Router, extract::Request, http::HeaderValue, middleware, response::Response,
+};
 use tower_http::{compression::CompressionLayer, services::ServeDir};
 ```
 
-`CompressionLayer` is imported for the compressed-script test.
+#### Helper refactoring
 
-### Change 2: `run_browser_test` refactored into two functions
+The original `run_browser_test` was split into two functions:
 
-The original `run_browser_test` function was renamed to `run_browser_test_with_router` with an additional `app: Router` parameter. A new `run_browser_test` wrapper was created that passes the default router.
-
-**`run_browser_test_with_router`** (renamed from `run_browser_test`):
-- Signature: `async fn run_browser_test_with_router(name, expect, timeout, spec, app)`
-- Takes a custom `Router` instead of creating one internally.
-- Doc comment was modified: "expectation." became "expectation and a custom router."
-- Body unchanged except: the line `let app = Router::new().fallback_service(ServeDir::new("./tests"));` was removed (now passed as parameter).
-
-**`run_browser_test`** (new wrapper):
+**New lower-level function (`run_browser_test_with_router`):**
 ```rust
+/// See [`run_browser_test`].
+async fn run_browser_test_with_router(
+    name: &str,
+    expect: Expect,
+    timeout: Duration,
+    spec: Option<&str>,
+    app: Router,  // <-- accepts a custom Router
+) {
+    // Contains all the body that was previously in run_browser_test,
+    // except Router construction is moved out.
+    // `let app_other = app.clone();` replaces the inline Router::new().
+}
+```
+
+**New higher-level wrapper (`run_browser_test`):**
+```rust
+/// Run a named browser test with a given expectation.
+///
+/// Spins up two web servers: one on a random port P, and one on port P + 1, in order to
+/// facilitate multi-domain tests.
+///                                   ^^^^^^^^^^
+///             (typo fix: was "facitiliate" in antithesishq/main)
+///
+/// The test starts at:
+///
+///     http://localhost:{P}/tests/{name}.
+///
+/// Which means that every named test case directory should have an index.html file.
 async fn run_browser_test(
     name: &str,
     expect: Expect,
@@ -116,52 +138,32 @@ async fn run_browser_test(
 }
 ```
 
-All existing tests continue to call `run_browser_test` with no changes to their call sites.
+#### Three new test functions
 
-### Change 3: `test_external_module_script` added
-
+**`test_external_module_script` (line 474):**
 ```rust
-/// Verifies that `<script type="module" src="...">` loads correctly.
-///
-/// When Bombadil intercepts a response and calls `Fetch.fulfillRequest`, it must
-/// forward the original `Content-Type` header. Without it, Chrome rejects ES module
-/// scripts with a MIME type error, silently preventing the module from running.
 #[tokio::test]
 async fn test_external_module_script() {
     run_browser_test(
         "external-module-script",
         Expect::Success,
-        Duration::from_secs(10),
-        Some(
-            r#"
+        Duration::from_secs(20),
+        Some(r#"
 import { extract, eventually } from "@antithesishq/bombadil";
-export { scroll } from "@antithesishq/bombadil/defaults";
+export { clicks } from "@antithesishq/bombadil/defaults";
 
 const resultText = extract((state) => state.document.body?.querySelector("\#result")?.textContent ?? null);
 
 export const module_script_loads = eventually(
   () => resultText.current === "LOADED"
 ).within(10, "seconds");
-"#,
-        ),
-    )
-    .await;
+"#),
+    ).await;
 }
 ```
 
-Tests that ES module scripts (`<script type="module">`) load correctly when Bombadil intercepts and instruments the response. Uses the default router (no compression).
-
-### Change 4: `test_compressed_script` added
-
+**`test_compressed_script` (line 497):**
 ```rust
-/// Verifies that scripts served with `Content-Encoding: gzip` load correctly after
-/// Bombadil intercepts and instruments them.
-///
-/// When Bombadil intercepts a gzip-compressed response, CDP's `GetResponseBody` returns
-/// the already-decoded body. If Bombadil then forwards the original `Content-Encoding:
-/// gzip` header, Chrome treats the plaintext as gzip-compressed data and fails to parse
-/// the script. The fix strips stale transport headers (`Content-Encoding`,
-/// `Content-Length`, `Transfer-Encoding`) before calling `Fetch.fulfillRequest`.
 #[tokio::test]
 async fn test_compressed_script() {
     let app = Router::new()
@@ -170,33 +172,75 @@ async fn test_compressed_script() {
     run_browser_test_with_router(
         "compressed-script",
         Expect::Success,
-        Duration::from_secs(10),
-        Some(
-            r#"
+        Duration::from_secs(20),
+        Some(r#"
 import { extract, eventually } from "@antithesishq/bombadil";
-export { scroll } from "@antithesishq/bombadil/defaults";
+export { clicks } from "@antithesishq/bombadil/defaults";
 
 const resultText = extract((state) => state.document.body?.querySelector("\#result")?.textContent ?? null);
 
 export const compressed_script_loads = eventually(
   () => resultText.current === "LOADED"
 ).within(10, "seconds");
-"#,
-        ),
+"#),
         app,
-    )
-    .await;
+    ).await;
 }
 ```
 
-Tests that gzip-compressed scripts load correctly after instrumentation. Uses a custom router with `CompressionLayer` to serve gzip-compressed responses. This is the only test that uses `run_browser_test_with_router` directly.
+**`test_csp_script` (line 522):**
+```rust
+#[tokio::test]
+async fn test_csp_script() {
+    let app = Router::new()
+        .fallback_service(ServeDir::new("./tests"))
+        .layer(middleware::from_fn(
+            |req: Request, next: middleware::Next| async move {
+                let mut response: Response = next.run(req).await;
+                response.headers_mut().insert(
+                    axum::http::header::HeaderName::from_static(
+                        "content-security-policy",
+                    ),
+                    HeaderValue::from_static(
+                        "script-src 'sha256-sRoPO3cqhmVEQTMEK66eATz8J/LJdrvqrNVuMKzGgSM='",
+                    ),
+                );
+                response
+            },
+        ));
+    run_browser_test_with_router(
+        "csp-script",
+        Expect::Success,
+        Duration::from_secs(20),
+        Some(r#"
+import { extract, eventually } from "@antithesishq/bombadil";
+export { clicks } from "@antithesishq/bombadil/defaults";
+
+const resultText = extract((state) => state.document.body?.querySelector("\#result")?.textContent ?? null);
+
+export const csp_script_loads = eventually(
+  () => resultText.current === "LOADED"
+).within(10, "seconds");
+"#),
+        app,
+    ).await;
+}
+```
 
 ---
 
-## New Test Fixtures
+### `Cargo.toml` (dev-dependencies)
+
+```diff
+-tower-http = { version = "0.6.8", features = ["fs"] }
++tower-http = { version = "0.6.8", features = ["fs", "compression-gzip"] }
+```
+
+---
+
+## Added Files
 
 ### `tests/external-module-script/index.html`
-
 ```html
 <!DOCTYPE html>
 <html>
@@ -208,13 +252,11 @@ Tests that gzip-compressed scripts load correctly after instrumentation. Uses a 
 ```
 
 ### `tests/external-module-script/module.js`
-
 ```javascript
 document.getElementById("result").textContent = "LOADED";
 ```
 
 ### `tests/compressed-script/index.html`
-
 ```html
 <!DOCTYPE html>
 <html>
@@ -226,33 +268,32 @@ document.getElementById("result").textContent = "LOADED";
 ```
 
 ### `tests/compressed-script/script.js`
-
 ```javascript
 document.getElementById("result").textContent = "LOADED";
 ```
 
-Both fixture pairs follow the same pattern: start with `WAITING` in the DOM, script changes it to `LOADED`. The test spec uses `eventually(() => resultText.current === "LOADED").within(10, "seconds")`.
+### `tests/csp-script/index.html`
+```html
+<!doctype html>
+<html>
+  <head><title>CSP Script Test</title></head>
+  <body>
+    <h1 id="result">WAITING</h1>
+    <script src="/csp-script/script.js"></script>
+  </body>
+</html>
+```
+
+### `tests/csp-script/script.js`
+```javascript
+document.getElementById("result").textContent = "LOADED";
+```
+
+### `PATTERNS.md`
+A documentation file with coding conventions derived from the upstream codebase. See the file itself for full content.
 
 ---
 
-## `Cargo.toml` — Dependency Feature Addition
+## Unchanged Files
 
-```toml
-# Was:
-tower-http = { version = "0.6.8", features = ["fs"] }
-
-# Now:
-tower-http = { version = "0.6.8", features = ["fs", "compression-gzip"] }
-```
-
-The `compression-gzip` feature enables `tower_http::compression::CompressionLayer`, used only in `test_compressed_script`.
-
-## `Cargo.lock` — Transitive Dependencies
-
-Three new crates were added as transitive dependencies of `tower-http`'s `compression-gzip` feature:
-
-- `async-compression` 0.4.40 (depends on `compression-codecs`, `compression-core`, `pin-project-lite`, `tokio`)
-- `compression-codecs` 0.4.37 (depends on `compression-core`, `flate2`, `memchr`)
-- `compression-core` 0.4.31 (no dependencies)
-
-`tower-http` gained `async-compression` as a dependency.
+All other files in the repository are byte-identical between `main` and `antithesishq/main`. The `Cargo.lock` changes are purely transitive (adding `async-compression`, `compression-codecs`, `compression-core` as dependencies of `tower-http`'s `compression-gzip` feature).
