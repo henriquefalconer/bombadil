@@ -1,32 +1,61 @@
-# Security Considerations
+# Security Implications of Header-Forwarding Changes
 
-## Header Forwarding in Request Interception
+## CSP Stripping Removes Full Page Security Policy on Documents
 
-Bombadil intercepts HTTP responses via CDP's `Fetch.fulfillRequest` to inject coverage instrumentation into JavaScript. When fulfilling a request, CDP uses **replacement semantics** — the provided headers replace the original set entirely.
+The `content-security-policy` header is stripped from **all** fulfilled responses,
+including HTML documents. For script resources, this is correct — instrumentation
+changes the body, so script-hash digests become invalid. But for document
+responses, the CSP header governs the **entire page's security policy**:
+`frame-ancestors`, `connect-src`, `img-src`, `style-src`, `font-src`, `base-uri`,
+`form-action`, `navigate-to`, and more.
 
-### Current Approach
+Stripping it means Bombadil-tested pages run with **no CSP enforcement at all**.
+Consequences:
 
-The code forwards all original response headers except a denylist of 7 headers that become invalid after body instrumentation:
+- XHR/fetch to origins that CSP would block will succeed under Bombadil but fail
+  in production, producing both false positives and missed bugs.
+- Iframes from blocked origins will load.
+- Inline styles that CSP blocks will render.
+- The fuzz session observes a different application than real users see.
 
-| Stripped Header | Reason |
-|----------------|--------|
-| `etag` | Replaced with a fresh source-ID-based etag |
-| `content-length` | Body size changes after instrumentation |
-| `content-encoding` | CDP's `GetResponseBody` returns decompressed content; the instrumented body is uncompressed |
-| `transfer-encoding` | Same as above (chunked encoding no longer applies) |
-| `content-security-policy` | Script hash digests in CSP no longer match the instrumented script body |
-| `content-security-policy-report-only` | Same as above |
-| `strict-transport-security` | Prevents HSTS pinning on the interception endpoint |
+The correct approach is to parse the CSP value and only remove hash-based or
+nonce-based directives within `script-src`, preserving all other directives.
+The same reasoning applies to `content-security-policy-report-only`.
 
-### Known Limitations
+## HSTS Stripping Is Unconditional
 
-1. **Denylist is not exhaustive.** Headers like `digest`, `repr-digest` (RFC 9530), or custom CDN checksum headers are not stripped. If the target site or its infrastructure adds body-dependent headers not in the list, they will be forwarded with stale values. This could cause integrity verification failures in downstream proxies or service workers.
+The `strict-transport-security` header is stripped for every response, not only
+for localhost or ephemeral test sessions. When Bombadil fuzzes a real HTTPS
+origin:
 
-2. **CSP is stripped entirely, not modified.** This means CSP protections (XSS prevention, inline script blocking) are disabled during Bombadil testing. Properties that depend on CSP enforcement behavior cannot be tested. This is an inherent limitation of body-rewriting instrumentation.
+- The browser will not enforce HTTPS for subsequent navigations within the run.
+- Mixed-content loads that HSTS would block will succeed.
+- HTTP-downgrade links that would be auto-upgraded in production will navigate
+  to insecure origins.
 
-3. **HSTS stripping runs in all contexts.** The `strict-transport-security` header is stripped for all target sites, not just localhost. In practice this is harmless (Bombadil uses ephemeral browser profiles), but the code comment's rationale is narrower than the actual scope.
+Since Bombadil uses ephemeral browser profiles (`TempDir`), HSTS state does not
+persist across runs. But within a single run, the browser would normally learn
+and enforce HSTS after the first response; stripping it removes that intra-run
+protection and creates a fidelity gap for HTTPS targets.
 
-### Recommendations for Future Work
+## Denylist May Be Incomplete
 
-- Consider switching to an allowlist approach (only forward `content-type`, `set-cookie`, `cache-control`, `access-control-*`, etc.) to fail closed against unknown body-dependent headers.
-- Consider selectively modifying CSP (adding instrumentation script hashes to the allowlist) rather than stripping it entirely, to preserve CSP enforcement for the tested application.
+Headers whose validity depends on body content that are **not** currently
+stripped:
+
+| Header | Risk |
+|--------|------|
+| `digest` (RFC 3230 / RFC 9530) | Contains a hash of the response body. After instrumentation, validation against this hash fails. Rare in practice. |
+| `age`, `last-modified`, `expires` | Stale cache metadata for the instrumented body. Low risk because Bombadil replaces the `etag` and uses ephemeral profiles. |
+
+These are unlikely to cause problems in typical test targets but represent
+unhandled edge cases.
+
+## Non-HTML Document Bodies Are Unchanged but Headers Are Still Filtered
+
+When a non-HTML document (XML, PDF) is intercepted, the body is passed through
+unchanged (`body.clone()`), but `content-length`, `content-encoding`, and
+`transfer-encoding` are still stripped. This is not a regression from upstream
+(which dropped **all** headers), but it is unnecessary work that could
+theoretically cause issues if a downstream consumer relies on those headers for
+unmodified bodies.
