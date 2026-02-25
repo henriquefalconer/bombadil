@@ -1,12 +1,14 @@
 #!/bin/bash
 set -euo pipefail   # Exit on error, undefined vars, and pipe failures
 
-# Usage: ./loop.sh [plan] [max_iterations] [--no-sandbox] [--goal <text>]
+# Usage: ./loop.sh [plan|security] [max_iterations] [--no-sandbox] [--goal <text>]
 # Examples:
 #   ./loop.sh plan 3                   # Plan mode, max 3 iters, docker
 #   ./loop.sh plan 3 --no-sandbox      # Plan mode, max 3 iters, claude CLI + confirmation
 #   ./loop.sh plan 3 --goal "feature"  # Plan mode, max 3 iters, custom goal
 #   ./loop.sh plan                     # Plan mode, will ask you interactively for goal
+#   ./loop.sh security 2               # Security mode, max 2 iters, docker
+#   ./loop.sh security --no-sandbox    # Security mode, unlimited, claude CLI + confirmation
 #   ./loop.sh                          # Build mode, unlimited, via docker sandbox
 #   ./loop.sh --no-sandbox             # Build mode, unlimited, via claude CLI directly + confirmation
 #   ./loop.sh 20 --no-sandbox          # Build mode, max 20, claude CLI + confirmation
@@ -53,6 +55,12 @@ set -- "${POSITIONAL[@]:-}"   # restore positional parameters
 if [ "${1:-}" = "plan" ]; then
     MODE="plan"
     PROMPT_FILE="PROMPT_plan.md"
+    shift
+    MAX_ITERATIONS="${1:-0}"
+    [[ "$MAX_ITERATIONS" =~ ^[0-9]+$ ]] && shift || MAX_ITERATIONS=0
+elif [ "${1:-}" = "security" ]; then
+    MODE="security"
+    PROMPT_FILE="PROMPT_security.md"
     shift
     MAX_ITERATIONS="${1:-0}"
     [[ "$MAX_ITERATIONS" =~ ^[0-9]+$ ]] && shift || MAX_ITERATIONS=0
@@ -198,7 +206,7 @@ fi
 if [ "$MODE" = "build" ]; then
     MODEL="sonnet"   # for speed
 else
-    MODEL="opus"     # complex reasoning & planning
+    MODEL="opus"     # complex reasoning & planning (plan + security)
 fi
 
 # ────────────────────────────────────────────────
