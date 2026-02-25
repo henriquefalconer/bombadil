@@ -24,6 +24,7 @@
 # Header Handling
 
 - When constructing response headers for `Fetch.fulfillRequest`, document why each header is stripped. The strip list is a security-sensitive surface — every entry and every omission should have a stated reason.
+- Headers that must NOT be stripped (e.g., `content-type`, which is required for ES module MIME type enforcement) should be called out in a comment near the strip list. The strip list documents removals; a complementary note should document critical preservations to prevent accidental regression.
 - CDP's `Fetch.fulfillRequest` uses replacement semantics: providing `responseHeaders` replaces the entire original header set. Omitting a header is equivalent to actively removing it.
 - Any header whose validity depends on body content (hashes, lengths, encodings, integrity digests) becomes stale after instrumentation and must be accounted for in the strip list.
 - Prefer failing closed over failing open: when in doubt about whether a header is safe to forward after body modification, strip it.
@@ -35,7 +36,7 @@
 
 # Pattern Matching
 
-- When a code path branches on resource type, match each known type explicitly. Do not use `_ =>` as a stand-in for "the one other type currently registered." The codebase uses `bail!` for unexpected resource types in body instrumentation; header handling should follow the same principle.
+- When a code path branches on resource type, match each registered interception type explicitly. Use `_ =>` only when it represents a genuinely safe, conservative default (e.g., forward unchanged) and include a brief comment explaining why the default is safe. Do not use `_ =>` as a stand-in for "the one other type currently registered."
 
 # Builder Patterns
 

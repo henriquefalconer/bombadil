@@ -4,7 +4,7 @@ This document covers every identified problem and assumption in the code added t
 
 ## Context
 
-`antithesishq/main` dropped all response headers when fulfilling intercepted requests, adding only a synthetic `etag`. This was a known gap marked `// TODO: forward headers`. The `develop` branch replaces this with a header-forwarding pipeline that strips specific headers and applies resource-type-aware CSP sanitization. Four issues identified in a prior analysis (default-src fallback, strict-dynamic orphaning, report-uri/report-to noise, resource type wildcard) have been addressed in the current code. The analysis below evaluates the code as it stands now.
+`antithesishq/main` dropped all response headers when fulfilling intercepted requests, adding only a synthetic `etag`. This was a known gap marked `// TODO: forward headers`. The `develop` branch replaces this with a header-forwarding pipeline that strips specific headers and applies resource-type-aware CSP sanitization. The pipeline is encapsulated in `build_response_headers` with CSP logic in `sanitize_csp`. Four issues identified in a prior analysis (default-src fallback, strict-dynamic orphaning, report-uri/report-to noise, resource type wildcard) have been addressed. The analysis below evaluates the code as it stands now.
 
 ---
 
@@ -20,7 +20,7 @@ This is inherent to Bombadil's approach: instrumentation changes script bodies, 
 
 ### Why it was ultimately accepted
 
-This is a design-level trade-off, not a bug. Bombadil is a testing tool, not a production proxy. The purpose of CSP sanitization is to prevent instrumentation from breaking the page, not to maintain production-equivalent security posture. Hash-only CSP sites are relatively uncommon (most use `'unsafe-inline'` or nonce-based policies). The weakening only applies during the test session.
+This is a design-level trade-off, not a bug. Bombadil is a testing tool, not a production proxy. The purpose of CSP sanitization is to prevent instrumentation from breaking the page, not to maintain production-equivalent security posture. The weakening only applies during the test session.
 
 ### Consequence if deployed
 
@@ -32,17 +32,11 @@ This is a design-level trade-off, not a bug. Bombadil is a testing tool, not a p
 
 ### Description
 
-For Script resources, both `content-security-policy` and `content-security-policy-report-only` are dropped entirely. For Document resources, both are sanitized identically (hashes/nonces stripped, report directives stripped). The `report-only` header is designed to never block anything — it only sends violation reports. Dropping or sanitizing it prevents the application from collecting CSP violation data even during testing.
-
-### Why it was considered
-
-The `report-only` header, after sanitization, has its `report-uri`/`report-to` directives stripped. Without a reporting endpoint, the browser evaluates the policy but has nowhere to send results. The sanitized `report-only` header becomes effectively inert.
-
-For Script resources, CSP headers are typically irrelevant because CSP is enforced per-document, not per-subresource. Dropping CSP from Script responses has no browser-observable effect in standard implementations.
+For Script resources, both `content-security-policy` and `content-security-policy-report-only` are dropped entirely. For Document resources, both are sanitized identically (hashes/nonces stripped, report directives stripped). The `report-only` header is designed to never block anything — it only sends violation reports. Dropping or sanitizing it prevents the application from collecting CSP violation data during testing.
 
 ### Why it was accepted
 
-Sanitizing `report-only` the same way as the enforcing header is conservative and consistent. The alternative — passing `report-only` through unchanged — would cause false-positive violation reports (since instrumented scripts would fail hash checks in the report-only policy), which is the same noise problem that report-uri/report-to stripping was designed to prevent.
+Sanitizing `report-only` the same way as the enforcing header is conservative and consistent. The alternative — passing `report-only` through unchanged — would cause false-positive violation reports (since instrumented scripts would fail hash checks in the report-only policy), generating noise at the application's reporting endpoint. After sanitization removes `report-uri`/`report-to`, the report-only header becomes effectively inert, so the treatment is harmless.
 
 ### Consequence if deployed
 
@@ -59,10 +53,10 @@ Sanitizing `report-only` the same way as the enforcing header is conservative an
 
 ### Connected systems and variables
 
-- **Directive name matching**: Uses `.to_lowercase()` then prefix comparison. This is correct per the CSP spec (directive names are case-insensitive).
-- **Value matching**: Uses `.to_lowercase()` on values then checks prefixes like `'sha256-`. Hash algorithm names are case-insensitive per CSP spec, but the base64 hash itself is case-sensitive. Since the code only checks the prefix to decide whether to REMOVE a value (not to validate it), case sensitivity of the hash body is irrelevant.
+- **Directive name matching**: Uses `.to_lowercase()` then prefix comparison. Correct per CSP spec (directive names are case-insensitive).
+- **Value matching**: Uses `.to_lowercase()` on values then checks prefixes like `'sha256-`. Hash algorithm names are case-insensitive per CSP spec, and since the code only checks prefixes to decide whether to REMOVE a value (not to validate its content), case sensitivity of the base64 body is irrelevant.
 - **Semicolons in values**: CSP values cannot contain unescaped semicolons. The `;`-split is spec-conformant.
-- **Whitespace handling**: CSP directives use SP as separator. The `.split_whitespace()` call handles multiple spaces and leading/trailing whitespace.
+- **Whitespace handling**: CSP directives use SP as separator. `.split_whitespace()` handles multiple spaces and leading/trailing whitespace.
 
 ### Why it was accepted
 
@@ -82,11 +76,7 @@ The parsing approach handles all standard CSP constructs correctly. Edge cases l
 
 ### Why it was disregarded
 
-In a testing tool context, intermediate HTTP caches are not in play. Bombadil creates fresh browser profiles for each test session, so the browser cache starts empty. The `Vary` header primarily affects cache key partitioning in proxies and CDNs.
-
-### Connected systems
-
-- **Service workers**: An application under test could use service workers that inspect `Vary` for caching decisions. A mismatch could cause unexpected cache behavior. However, service workers would need to be explicitly programmed to inspect `Vary`, which is uncommon.
+In a testing tool context, intermediate HTTP caches are not in play. Bombadil creates fresh browser profiles for each test session, so the browser cache starts empty. The `Vary` header primarily affects cache key partitioning in proxies and CDNs. An application's service worker could theoretically inspect `Vary` for caching decisions, but this is extremely uncommon.
 
 ### Consequence if deployed
 
@@ -118,23 +108,41 @@ This is a pre-existing limitation of Bombadil's interception approach, not a con
 
 ---
 
-## Problem 7: Inline iterator chain complexity
+## Problem 7: `_ =>` wildcard in resource type matching for CSP
 
 ### Description
 
-The `.response_headers()` builder argument is a ~40-line iterator chain with `.filter()`, `.flat_map()` containing a `match` with three arms, `.chain()`, and a closure capturing `resource_type`. This is inside the `FulfillRequestParams::builder()` call.
+`build_response_headers` uses `_ => Some(h.clone())` for the CSP match on resource type. Only `Script` and `Document` are registered as interception targets in `instrument_js_coverage`, so the wildcard arm should never execute. The existing pattern in the body instrumentation code uses `bail!` for unexpected resource types rather than a silent passthrough.
 
-### Why it was noted
+### Why it was accepted
 
-The codebase on `antithesishq/main` uses simple builder patterns with named values. The inline chain is hard to review, hard to modify, and hard to test in isolation. Extracting the header-construction logic into a named function would make the builder call read as a sequence of named values and would allow unit-testing the header filtering independently of CDP.
+The wildcard arm preserves CSP headers unchanged for unknown types, which is the safe default (failing closed would mean dropping CSP, which is less safe). Unlike body instrumentation — which cannot proceed without knowing the resource type — header handling can safely pass through unmodified headers. The two code paths have different correctness requirements: body instrumentation needs to choose a strategy (JS vs HTML vs passthrough), while header handling has a universally safe default (forward unchanged).
 
 ### Consequence if deployed
 
-- No runtime impact. This is a maintainability and review-quality concern. Future modifications to header handling (e.g., adding new resource types or new header transformations) would be easier to get right if the logic is in a named, testable function.
+- If the interception registration is later expanded to include other resource types (e.g., `Stylesheet`), CSP headers for those types would be forwarded unchanged without any explicit consideration. This is safe but could miss an opportunity to strip CSP when needed.
 
 ---
 
-## Problem 8: Missing `Content-MD5` in strip list
+## Problem 8: `content-type` preservation is implicit, not explicit
+
+### Description
+
+The fix for the module script issue (ISSUE.md) was to forward all response headers including `content-type`. But `content-type` preservation is guaranteed only by its absence from `STRIPPED_RESPONSE_HEADERS`. There is no positive assertion or comment in the strip list documenting that `content-type` MUST NOT be stripped. If someone later adds `content-type` to the strip list (e.g., thinking the body type changed), the module script bug silently returns.
+
+### Connected systems
+
+- **ES modules**: Browsers enforce strict MIME type checking for `<script type="module">`. If `content-type` is absent, the browser rejects the script with "Expected a JavaScript-or-Wasm module script but the server responded with a MIME type of ''." This was the original bug that motivated the entire header-forwarding effort.
+- **HTML documents**: Browsers use `content-type` to decide whether to parse as HTML, XML, or plain text. Stripping it would cause content sniffing, which may produce different results.
+- **CSS, images, fonts**: All enforced MIME type checking for their respective resource types.
+
+### Consequence if deployed as-is
+
+- No immediate runtime impact — `content-type` is correctly forwarded. The risk is future regression if the strip list is modified without understanding this dependency.
+
+---
+
+## Problem 9: Missing `Content-MD5` in strip list
 
 ### Description
 
@@ -146,7 +154,7 @@ The codebase on `antithesishq/main` uses simple builder patterns with named valu
 
 ---
 
-## Problem 9: Missing `Accept-Ranges` handling
+## Problem 10: Missing `Accept-Ranges` handling
 
 ### Description
 
@@ -168,6 +176,7 @@ Browsers do not make range requests for script or HTML document resources. `Acce
 | 4 | `Vary` header mismatch | Negligible | Disregarded — no practical impact in testing |
 | 5 | ETag replacement for non-instrumented content | None | Disregarded — inherited from antithesishq/main |
 | 6 | SRI incompatibility | Pre-existing | Not in scope — existed before header forwarding |
-| 7 | Inline iterator chain complexity | Code quality | Should be addressed for maintainability |
-| 8 | Missing `Content-MD5` | None | Deprecated header |
-| 9 | Missing `Accept-Ranges` | None | Range requests on scripts not realistic |
+| 7 | `_ =>` wildcard in CSP resource type match | Low | Accepted — safe default, different from body instrumentation |
+| 8 | `content-type` preservation is implicit | Low | Noted — regression risk if strip list is modified blindly |
+| 9 | Missing `Content-MD5` | None | Deprecated header |
+| 10 | Missing `Accept-Ranges` | None | Range requests on scripts not realistic |
