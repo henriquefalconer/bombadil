@@ -538,9 +538,17 @@ fn make_csp_router(csp: &'static str) -> Router {
 
 #[tokio::test]
 async fn test_csp_script() {
-    // Verifies Bombadil strips script-hash CSP so instrumented scripts load.
+    // Verifies two things simultaneously:
+    // 1. Bombadil strips CSP from Script resources so instrumented scripts load
+    //    despite a hash-based script-src that would otherwise block them.
+    // 2. Bombadil preserves non-script CSP directives on Document resources
+    //    (img-src 'none' remains active, triggering a violation event).
+    // On main (no fix) all headers are dropped from every response, so no
+    // img-src restriction exists and the violation never fires — the test fails.
+    // On develop (with fix) the Script CSP is dropped (script loads) and the
+    // Document CSP is sanitised to just `img-src 'none'` (violation fires).
     let app = make_csp_router(
-        "script-src 'sha256-sRoPO3cqhmVEQTMEK66eATz8J/LJdrvqrNVuMKzGgSM='",
+        "script-src 'sha256-sRoPO3cqhmVEQTMEK66eATz8J/LJdrvqrNVuMKzGgSM='; img-src 'none'",
     );
     run_browser_test_with_router(
         "csp-script",
@@ -552,9 +560,10 @@ import { extract, eventually } from "@antithesishq/bombadil";
 export { clicks } from "@antithesishq/bombadil/defaults";
 
 const resultText = extract((state) => state.document.body?.querySelector("\#result")?.textContent ?? null);
+const cspStatus = extract((state) => state.document.body?.querySelector("\#csp-status")?.textContent ?? null);
 
-export const csp_script_loads = eventually(
-  () => resultText.current === "LOADED"
+export const csp_script_loads_and_csp_enforced = eventually(
+  () => resultText.current === "LOADED" && cspStatus.current === "CSP_ACTIVE"
 ).within(10, "seconds");
 "#,
         ),

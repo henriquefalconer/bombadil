@@ -4,6 +4,15 @@
   </head>
   <body>
     <h1 id="result">WAITING</h1>
+    <p id="csp-status">INACTIVE</p>
     <script src="/shared/script.js"></script>
+    <script>
+      document.addEventListener('securitypolicyviolation', function() {
+        document.getElementById('csp-status').textContent = 'CSP_ACTIVE';
+      });
+      var img = document.createElement('img');
+      img.src = 'https://external.invalid/x.png';
+      document.body.appendChild(img);
+    </script>
   </body>
 </html>

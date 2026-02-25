@@ -663,6 +663,49 @@ mod tests {
     }
 
     #[test]
+    fn build_headers_drops_report_only_csp_for_script_resources() {
+        let headers = Some(vec![
+            hdr("content-security-policy-report-only", "script-src 'self'"),
+            hdr("content-type", "text/javascript"),
+        ]);
+        let result = build_response_headers(
+            &headers,
+            &network::ResourceType::Script,
+            sid(5),
+        );
+        assert!(
+            !result.iter().any(|h| h
+                .name
+                .eq_ignore_ascii_case("content-security-policy-report-only")),
+            "report-only CSP must be dropped for Script resources"
+        );
+    }
+
+    #[test]
+    fn build_headers_sanitizes_report_only_csp_for_document_resources() {
+        let headers = Some(vec![hdr(
+            "content-security-policy-report-only",
+            "script-src 'sha256-abc' 'self'; img-src 'self'",
+        )]);
+        let result = build_response_headers(
+            &headers,
+            &network::ResourceType::Document,
+            sid(6),
+        );
+        let csp = result
+            .iter()
+            .find(|h| {
+                h.name
+                    .eq_ignore_ascii_case("content-security-policy-report-only")
+            })
+            .expect(
+                "sanitized report-only CSP must be present for Document \
+                 resources",
+            );
+        assert_eq!(csp.value, "script-src 'self'; img-src 'self'");
+    }
+
+    #[test]
     fn build_headers_appends_synthetic_etag() {
         let source = sid(42);
         let result = build_response_headers(
