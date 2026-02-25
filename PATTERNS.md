@@ -9,6 +9,7 @@
 - Test HTML fixtures should follow the structure used by existing fixtures in the `tests/` directory: include `<html>`, `<head>`, and `<title>` elements. Omit `<!DOCTYPE html>`, `<meta>`, viewport tags, and styling unless the test specifically exercises them. The `<title>` should be a human-readable name for the test case.
 - All HTML fixtures for the same logical test pattern (e.g., "script loads and sets text content") should use identical structure. Do not vary whitespace, indentation style, or casing of HTML tags between fixtures that serve the same purpose.
 - When multiple tests share the same setup logic (e.g., building a router with specific middleware), extract that logic into a named helper function rather than duplicating the closure or builder inline.
+- Do not use section-separator comments (`// Item 1: ...`, `// --- ...`) inside unit test modules to organize tests by topic. Test ordering and `#[test]` names are sufficient grouping. If a module has so many tests that it needs internal headers, consider splitting into submodules.
 
 # Doc Comments
 
@@ -35,6 +36,11 @@
 # Pattern Matching
 
 - When a code path branches on resource type, match each known type explicitly. Do not use `_ =>` as a stand-in for "the one other type currently registered." The codebase uses `bail!` for unexpected resource types in body instrumentation; header handling should follow the same principle.
+
+# Builder Patterns
+
+- Keep builder call sites short. If a builder argument requires multi-line logic (filtering, mapping, branching), extract the computation into a local `let` binding or a named function. The builder call should read as a list of named values, not contain inline algorithms.
+- When an iterator chain inside a builder exceeds ~10 lines, it should be a named function that returns the iterator or collected result.
 
 # Error Handling
 
