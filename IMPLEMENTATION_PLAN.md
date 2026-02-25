@@ -6,17 +6,14 @@
 
 ## Root Cause
 
-In `src/browser/instrumentation.rs` lines 158-174, `FulfillRequestParams` is built with only a single `etag` header. The original response headers (available via `event.response_headers: Option<Vec<fetch::HeaderEntry>>`) are never forwarded. There is a `// TODO: forward headers` comment acknowledging this.
+In `src/browser/instrumentation.rs` lines 158-174, `FulfillRequestParams` is built with only a single `etag` header. The original response headers (available via `event.response_headers: Option<Vec<fetch::HeaderEntry>>`) are never forwarded. There is a `// TODO: forward headers` comment at line 167 acknowledging this.
 
-## Fix
+## Changes
 
-### 1. Forward original response headers in `FulfillRequestParams` (`src/browser/instrumentation.rs`)
+### 1. Forward original response headers (`src/browser/instrumentation.rs`)
 
-Replace the single `.response_header(...)` call (lines 163-167) with `.response_headers(...)` (plural), passing an iterator that:
-1. Takes `event.response_headers` (via `.iter().flatten()`), filtering out the original `etag` to avoid duplication
-2. Chains the computed `etag` header with the `source_id` value
+Replace lines 162-167 (the single `.response_header(...)` call + TODO comment) with `.response_headers(...)` (plural):
 
-Conceptual code:
 ```rust
 .response_headers(
     event.response_headers.iter().flatten()
@@ -27,24 +24,37 @@ Conceptual code:
             value: format!("{}", source_id.0),
         }))
 )
-// Remove the `// TODO: forward headers` comment
 ```
 
-The `.response_headers()` method accepts `I: IntoIterator<Item = S>, S: Into<HeaderEntry>`, confirmed available in `chromiumoxide 0.8.0`.
+This forwards all original response headers (including `Content-Type`), replaces the original `etag` with the computed `source_id` value. Verified: `HeaderEntry` derives `Clone`, and `FulfillRequestParamsBuilder::response_headers()` accepts `I: IntoIterator<Item = S>, S: Into<HeaderEntry>` (chromiumoxide 0.8.0).
 
-### 2. Add integration test (`tests/integration_tests.rs` + fixture)
+### 2. Add integration test
 
-**Fixture files:**
-- `tests/external-module-script/index.html`: HTML page with `<script type="module" src="/external-module-script/module.js"></script>` that has a `<h1 id="result">WAITING</h1>` element
-- `tests/external-module-script/module.js`: ES module that sets `document.getElementById("result").textContent = "LOADED"`
+**Fixture files** (new directory `tests/external-module-script/`):
 
-**Test function** (`test_external_module_script`):
-- Custom spec with `eventually(() => ...).within(10, "seconds")` checking `querySelector("#result").textContent === "LOADED"`
-- Also export default actions (at minimum `clicks` or a fallback action like a scroll)
-- `Expect::Success` — test passes when the module executes and changes the DOM
+- `tests/external-module-script/index.html`:
+  ```html
+  <!DOCTYPE html>
+  <html>
+  <body>
+    <h1 id="result">WAITING</h1>
+    <script type="module" src="/external-module-script/module.js"></script>
+  </body>
+  </html>
+  ```
 
-This test will fail before the fix (module never loads, stays "WAITING") and pass after.
+- `tests/external-module-script/module.js`:
+  ```js
+  document.getElementById("result").textContent = "LOADED";
+  ```
+
+**Test function** in `tests/integration_tests.rs` (`test_external_module_script`):
+- Custom spec with `eventually(() => state.document.body.querySelector("#result")?.textContent === "LOADED").within(10, "seconds")`
+- Export a fallback action (scroll) since the page has nothing interactive to click
+- `Expect::Success` — passes when the module loads and changes DOM text from "WAITING" to "LOADED"
+
+Pattern follows existing tests like `test_random_text_input` (custom spec with `eventually().within()`, `Expect::Success`, short timeout).
 
 ### 3. No changes needed for inline module scripts
 
-The existing HTML instrumentation in `src/instrumentation/html.rs` correctly skips inline `<script type="module">` tags (line 65: `is_inline_javascript` is false when `script_type == "module"`). Inline module scripts pass through without instrumentation, which is correct.
+The existing HTML instrumentation in `src/instrumentation/html.rs` correctly skips inline `<script type="module">` tags (line 64-65: `is_inline_javascript` is false when `script_type == "module"`). This is correct behavior — inline module scripts pass through without instrumentation.
