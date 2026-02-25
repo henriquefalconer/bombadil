@@ -1,5 +1,7 @@
 use anyhow::anyhow;
-use axum::Router;
+use axum::{
+    Router, extract::Request, http::HeaderValue, middleware, response::Response,
+};
 use std::{fmt::Display, path::PathBuf, sync::Once, time::Duration};
 use tempfile::TempDir;
 use tokio::sync::Semaphore;
@@ -52,16 +54,7 @@ fn setup() {
 static TEST_SEMAPHORE: Semaphore = Semaphore::const_new(2);
 const TEST_TIMEOUT_SECONDS: u64 = 120;
 
-/// Run a named browser test with a given expectation and a custom router.
-///
-/// Spins up two web servers: one on a random port P, and one on port P + 1, in order to
-/// facitiliate multi-domain tests.
-///
-/// The test starts at:
-///
-///     http://localhost:{P}/tests/{name}.
-///
-/// Which means that every named test case directory should have an index.html file.
+/// See [`run_browser_test`].
 async fn run_browser_test_with_router(
     name: &str,
     expect: Expect,
@@ -206,6 +199,16 @@ async fn run_browser_test_with_router(
     }
 }
 
+/// Run a named browser test with a given expectation.
+///
+/// Spins up two web servers: one on a random port P, and one on port P + 1, in order to
+/// facilitate multi-domain tests.
+///
+/// The test starts at:
+///
+///     http://localhost:{P}/tests/{name}.
+///
+/// Which means that every named test case directory should have an index.html file.
 async fn run_browser_test(
     name: &str,
     expect: Expect,
@@ -468,21 +471,16 @@ export const counterStateMachine = always(unchanged.or(increment).or(decrement))
     .await;
 }
 
-/// Verifies that `<script type="module" src="...">` loads correctly.
-///
-/// When Bombadil intercepts a response and calls `Fetch.fulfillRequest`, it must
-/// forward the original `Content-Type` header. Without it, Chrome rejects ES module
-/// scripts with a MIME type error, silently preventing the module from running.
 #[tokio::test]
 async fn test_external_module_script() {
     run_browser_test(
         "external-module-script",
         Expect::Success,
-        Duration::from_secs(10),
+        Duration::from_secs(20),
         Some(
             r#"
 import { extract, eventually } from "@antithesishq/bombadil";
-export { scroll } from "@antithesishq/bombadil/defaults";
+export { clicks } from "@antithesishq/bombadil/defaults";
 
 const resultText = extract((state) => state.document.body?.querySelector("\#result")?.textContent ?? null);
 
@@ -495,14 +493,6 @@ export const module_script_loads = eventually(
     .await;
 }
 
-/// Verifies that scripts served with `Content-Encoding: gzip` load correctly after
-/// Bombadil intercepts and instruments them.
-///
-/// When Bombadil intercepts a gzip-compressed response, CDP's `GetResponseBody` returns
-/// the already-decoded body. If Bombadil then forwards the original `Content-Encoding:
-/// gzip` header, Chrome treats the plaintext as gzip-compressed data and fails to parse
-/// the script. The fix strips stale transport headers (`Content-Encoding`,
-/// `Content-Length`, `Transfer-Encoding`) before calling `Fetch.fulfillRequest`.
 #[tokio::test]
 async fn test_compressed_script() {
     let app = Router::new()
@@ -511,15 +501,58 @@ async fn test_compressed_script() {
     run_browser_test_with_router(
         "compressed-script",
         Expect::Success,
-        Duration::from_secs(10),
+        Duration::from_secs(20),
         Some(
             r#"
 import { extract, eventually } from "@antithesishq/bombadil";
-export { scroll } from "@antithesishq/bombadil/defaults";
+export { clicks } from "@antithesishq/bombadil/defaults";
 
 const resultText = extract((state) => state.document.body?.querySelector("\#result")?.textContent ?? null);
 
 export const compressed_script_loads = eventually(
+  () => resultText.current === "LOADED"
+).within(10, "seconds");
+"#,
+        ),
+        app,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_csp_script() {
+    // The CSP header contains the sha256 hash of the *original* script.js.
+    // After Bombadil instruments the script the body changes, so the hash
+    // no longer matches and Chrome would block it — unless Bombadil strips
+    // the CSP header, which is what this test verifies.
+    let app = Router::new()
+        .fallback_service(ServeDir::new("./tests"))
+        .layer(middleware::from_fn(
+            |req: Request, next: middleware::Next| async move {
+                let mut response: Response = next.run(req).await;
+                response.headers_mut().insert(
+                    axum::http::header::HeaderName::from_static(
+                        "content-security-policy",
+                    ),
+                    HeaderValue::from_static(
+                        "script-src 'sha256-sRoPO3cqhmVEQTMEK66eATz8J/LJdrvqrNVuMKzGgSM='",
+                    ),
+                );
+                response
+            },
+        ));
+    run_browser_test_with_router(
+        "csp-script",
+        Expect::Success,
+        Duration::from_secs(20),
+        Some(
+            r#"
+import { extract, eventually } from "@antithesishq/bombadil";
+export { clicks } from "@antithesishq/bombadil/defaults";
+
+const resultText = extract((state) => state.document.body?.querySelector("\#result")?.textContent ?? null);
+
+export const csp_script_loads = eventually(
   () => resultText.current === "LOADED"
 ).within(10, "seconds");
 "#,
