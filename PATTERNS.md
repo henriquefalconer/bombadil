@@ -6,6 +6,7 @@
 - Use `TEST_TIMEOUT_SECONDS` (120s) as the test timeout unless there is a concrete reason for a shorter bound. When a shorter bound is used, it must be at least 2x any LTL `.within()` value in the spec, because the harness treats `Timeout` as `Success` for `Expect::Success` tests. Only use existing timeout tiers (3s, 5s, 30s, 120s); do not introduce new values.
 - When refactoring a shared helper into a wrapper and a lower-level implementation, the wrapper (the function most tests call) retains the full doc comment. The lower-level function gets a brief one-liner referencing the wrapper.
 - If you modify any part of a doc comment, verify the entire comment for factual correctness. Fixing a typo while leaving a wrong URL or outdated description signals carelessness.
+- Test fixture directories use kebab-case names that match the test function name after dropping the `test_` prefix and converting underscores to hyphens (e.g., `test_external_module_script` -> `external-module-script/`). Each directory must contain an `index.html` file.
 - Test HTML fixtures should follow the structure used by existing fixtures in the `tests/` directory: include `<html>`, `<head>`, and `<title>` elements. Omit `<!DOCTYPE html>`, `<meta>`, viewport tags, and styling unless the test specifically exercises them. The `<title>` should be a human-readable name for the test case.
 - All HTML fixtures for the same logical test pattern (e.g., "script loads and sets text content") should use identical structure. Do not vary whitespace, indentation style, or casing of HTML tags between fixtures that serve the same purpose.
 - When multiple test fixtures contain identical files (e.g., the same `script.js`), place the shared file in the `tests/shared/` directory and reference it via an absolute path in the HTML (e.g., `/shared/script.js`). Do not duplicate files across fixture directories.
@@ -13,6 +14,7 @@
 - When several integration tests verify the same class of property (e.g., "script loads and sets DOM text"), use a consistent spec structure: same `extract` pattern, same `eventually(...).within(...)` form, same baseline action export. Consistency across similar tests makes deviations visible and review easier.
 - A test fixture should only exercise the feature the test is named for. Do not add attributes, headers, or structural elements that implicitly test unrelated features. For example, a compression test fixture should use a plain `<script src="...">`, not `<script type="module" src="...">`, because module MIME type enforcement is a separate concern covered by its own test.
 - Each integration test should verify one behaviour. When two capabilities are tightly coupled (e.g., CSP stripping for scripts and CSP preservation for documents), a combined test is acceptable only if the spec property explicitly names both conditions and no individual test already covers each side.
+- In spec raw strings, escape `#` in CSS selectors as `\#` (e.g., `state.document.body?.querySelector("\#result")`). This is required because `#` has special meaning in Rust raw string delimiters at certain nesting levels.
 
 # Unit Tests
 
@@ -23,7 +25,7 @@
 
 # Doc Comments
 
-- Doc comments (`///`) go on public API surfaces, shared helpers, and constants whose purpose isn't obvious from the name. Do not add doc comments to test functions, private one-off helpers, or self-explanatory code.
+- Doc comments (`///`) go on public API surfaces, shared helpers, and constants whose purpose is not obvious from the name. Do not add doc comments to test functions, private one-off helpers, or self-explanatory code.
 - When a doc comment references a URL path, code path, or concrete value, verify it matches the actual implementation. Documentation that contradicts the code is worse than no documentation.
 - Private functions that are complex, security-sensitive, or called from both production and test code qualify for `///` doc comments. Simple private helpers that are only called from one site do not.
 
@@ -45,6 +47,12 @@
 - When sanitizing CSP headers, account for the browser's directive fallback chain. If `script-src` is absent, the browser falls back to `default-src` for script-loading decisions. Sanitization logic that only processes `script-src` and `script-src-elem` misses this fallback.
 - CSP values with semantic dependencies must be handled together. Stripping `'nonce-…'` or `'sha…'` from a directive that contains `'strict-dynamic'` leaves `'strict-dynamic'` without a trust anchor; the orphaned value must also be removed or the directive must be dropped entirely.
 - When modifying CSP headers, consider whether preserved directives can cause external side effects. `report-uri` and `report-to` direct the browser to POST violation reports to external endpoints; forwarding these after instrumentation-induced policy changes generates false reports.
+
+# Request Interception
+
+- Non-200 upstream responses should be forwarded via `ContinueRequestParams` (pass-through), not `FulfillRequestParams` (replace). Only replace the response body when instrumenting a successful response.
+- The response status code passed to `FulfillRequestParams` should reflect the actual upstream status that was checked. Do not hardcode a status code that could diverge from the condition guarding the code path.
+- When interception or instrumentation fails mid-flight, fall back to `ContinueRequestParams` to forward the original response uninstrumented rather than dropping the request. Log the failure at `warn` level.
 
 # Pattern Matching
 
