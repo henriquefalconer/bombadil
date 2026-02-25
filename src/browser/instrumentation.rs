@@ -191,59 +191,11 @@ pub async fn instrument_js_coverage(page: Arc<Page>) -> Result<()> {
                         .request_id(event.request_id.clone())
                         .body(BASE64_STANDARD.encode(body_instrumented))
                         .response_code(200)
-                        .response_headers(
-                            event
-                                .response_headers
-                                .iter()
-                                .flatten()
-                                .filter(|h| {
-                                    !STRIPPED_RESPONSE_HEADERS.iter().any(
-                                        |name| {
-                                            h.name.eq_ignore_ascii_case(name)
-                                        },
-                                    )
-                                })
-                                .flat_map(move |h| {
-                                    // CSP headers require resource-type-aware
-                                    // handling: strip entirely for scripts
-                                    // (instrumentation invalidates all hash
-                                    // values), sanitise for documents (preserve
-                                    // non-hash directives like img-src,
-                                    // frame-ancestors, connect-src, …).
-                                    let is_csp = h.name.eq_ignore_ascii_case(
-                                        "content-security-policy",
-                                    ) || h.name.eq_ignore_ascii_case(
-                                        "content-security-policy-report-only",
-                                    );
-                                    if is_csp {
-                                        match resource_type {
-                                            network::ResourceType::Script => {
-                                                None
-                                            }
-                                            network::ResourceType::Document => {
-                                                sanitize_csp(&h.value).map(
-                                                    |v| fetch::HeaderEntry {
-                                                        name: h.name.clone(),
-                                                        value: v,
-                                                    },
-                                                )
-                                            }
-                                            _ => {
-                                                // CSP on non-Script, non-Document
-                                                // resources is unexpected; preserve as-is
-                                                // rather than silently dropping.
-                                                Some(h.clone())
-                                            }
-                                        }
-                                    } else {
-                                        Some(h.clone())
-                                    }
-                                })
-                                .chain(std::iter::once(fetch::HeaderEntry {
-                                    name: "etag".to_string(),
-                                    value: format!("{}", source_id.0),
-                                })),
-                        )
+                        .response_headers(build_response_headers(
+                            &event.response_headers,
+                            &resource_type,
+                            source_id,
+                        ))
                         .build()
                         .map_err(|error| {
                             anyhow!(
@@ -400,6 +352,57 @@ fn sanitize_csp(csp_value: &str) -> Option<String> {
     }
 }
 
+/// Build the response header list for a fulfilled CDP request.
+///
+/// Strips headers invalidated by instrumentation (see [`STRIPPED_RESPONSE_HEADERS`]),
+/// applies resource-type-aware CSP handling, and appends a synthetic `etag` derived
+/// from `source_id`.
+///
+/// CSP stripping is resource-type-aware:
+/// - `Script`: the whole CSP header is dropped (script body instrumentation
+///   invalidates all hash-based `script-src` values).
+/// - `Document`: the header is sanitised via [`sanitize_csp`] (non-hash directives
+///   like `img-src`, `frame-ancestors`, `connect-src` are preserved).
+/// - Other resource types: CSP headers are forwarded unchanged.
+fn build_response_headers(
+    response_headers: &Option<Vec<fetch::HeaderEntry>>,
+    resource_type: &network::ResourceType,
+    source_id: SourceId,
+) -> Vec<fetch::HeaderEntry> {
+    response_headers
+        .iter()
+        .flatten()
+        .filter(|h| {
+            !STRIPPED_RESPONSE_HEADERS
+                .iter()
+                .any(|name| h.name.eq_ignore_ascii_case(name))
+        })
+        .flat_map(|h| {
+            let is_csp = h.name.eq_ignore_ascii_case("content-security-policy")
+                || h.name.eq_ignore_ascii_case(
+                    "content-security-policy-report-only",
+                );
+            if is_csp {
+                match resource_type {
+                    network::ResourceType::Script => None,
+                    network::ResourceType::Document => sanitize_csp(&h.value)
+                        .map(|v| fetch::HeaderEntry {
+                            name: h.name.clone(),
+                            value: v,
+                        }),
+                    _ => Some(h.clone()),
+                }
+            } else {
+                Some(h.clone())
+            }
+        })
+        .chain(std::iter::once(fetch::HeaderEntry {
+            name: "etag".to_string(),
+            value: format!("{}", source_id.0),
+        }))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,8 +486,6 @@ mod tests {
         );
     }
 
-    // Item 1: default-src fallback stripping
-
     #[test]
     fn sanitize_csp_default_src_hash_stripped_when_no_script_src() {
         // No script-src/script-src-elem present → default-src hashes must be stripped.
@@ -514,8 +515,6 @@ mod tests {
         assert_eq!(sanitize_csp("default-src 'sha256-abc'"), None);
     }
 
-    // Item 2: strict-dynamic removal without trust anchor
-
     #[test]
     fn sanitize_csp_strict_dynamic_removed_with_nonce() {
         // Nonce stripped → 'strict-dynamic' loses its trust anchor and is removed too.
@@ -541,8 +540,6 @@ mod tests {
         );
     }
 
-    // Item 3: report-uri / report-to stripping
-
     #[test]
     fn sanitize_csp_strips_report_uri() {
         assert_eq!(
@@ -566,6 +563,153 @@ mod tests {
         assert_eq!(
             sanitize_csp("default-src 'self'; report-uri /r; report-to g"),
             Some("default-src 'self'".to_string())
+        );
+    }
+
+    // ── build_response_headers ──────────────────────────────────────────────
+
+    fn hdr(name: &str, value: &str) -> fetch::HeaderEntry {
+        fetch::HeaderEntry {
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn sid(n: u32) -> SourceId {
+        SourceId::hash(&n.to_string())
+    }
+
+    #[test]
+    fn build_headers_strips_stripped_headers() {
+        // All STRIPPED_RESPONSE_HEADERS must be absent from the output.
+        let headers = Some(vec![
+            hdr("etag", "\"upstream\""),
+            hdr("content-length", "1234"),
+            hdr("content-encoding", "gzip"),
+            hdr("transfer-encoding", "chunked"),
+            hdr("digest", "sha-256=abc"),
+            hdr("content-type", "text/javascript"),
+        ]);
+        let result = build_response_headers(
+            &headers,
+            &network::ResourceType::Script,
+            sid(1),
+        );
+        let names: Vec<&str> = result.iter().map(|h| h.name.as_str()).collect();
+        for stripped in STRIPPED_RESPONSE_HEADERS {
+            // The synthetic etag is allowed; it is the only etag in the output.
+            if *stripped == "etag" {
+                continue;
+            }
+            assert!(
+                !names.iter().any(|n| n.eq_ignore_ascii_case(stripped)),
+                "header {stripped} should have been stripped"
+            );
+        }
+    }
+
+    #[test]
+    fn build_headers_preserves_content_type() {
+        // content-type is not in STRIPPED_RESPONSE_HEADERS and must pass through.
+        // This verifies the fix for the module-script issue (the original root cause
+        // was content-type being inadvertently dropped).
+        let headers =
+            Some(vec![hdr("content-type", "text/javascript; charset=utf-8")]);
+        let result = build_response_headers(
+            &headers,
+            &network::ResourceType::Script,
+            sid(2),
+        );
+        assert!(
+            result.iter().any(|h| h.name == "content-type"
+                && h.value == "text/javascript; charset=utf-8"),
+            "content-type must be preserved"
+        );
+    }
+
+    #[test]
+    fn build_headers_drops_csp_for_script_resources() {
+        let headers = Some(vec![
+            hdr("content-security-policy", "script-src 'self'"),
+            hdr("content-type", "text/javascript"),
+        ]);
+        let result = build_response_headers(
+            &headers,
+            &network::ResourceType::Script,
+            sid(3),
+        );
+        assert!(
+            !result.iter().any(|h| h
+                .name
+                .eq_ignore_ascii_case("content-security-policy")),
+            "CSP must be dropped for Script resources"
+        );
+    }
+
+    #[test]
+    fn build_headers_sanitizes_csp_for_document_resources() {
+        let headers = Some(vec![hdr(
+            "content-security-policy",
+            "script-src 'sha256-abc' 'self'; img-src 'self'",
+        )]);
+        let result = build_response_headers(
+            &headers,
+            &network::ResourceType::Document,
+            sid(4),
+        );
+        let csp = result
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("content-security-policy"))
+            .expect("sanitized CSP must be present for Document resources");
+        assert_eq!(csp.value, "script-src 'self'; img-src 'self'");
+    }
+
+    #[test]
+    fn build_headers_appends_synthetic_etag() {
+        let source = sid(42);
+        let result = build_response_headers(
+            &None,
+            &network::ResourceType::Script,
+            source,
+        );
+        let etag = result
+            .iter()
+            .find(|h| h.name == "etag")
+            .expect("synthetic etag must always be present");
+        assert_eq!(etag.value, format!("{}", source.0));
+    }
+
+    #[test]
+    fn build_headers_none_headers_yields_only_synthetic_etag() {
+        let result = build_response_headers(
+            &None,
+            &network::ResourceType::Script,
+            sid(7),
+        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "etag");
+    }
+
+    #[test]
+    fn build_headers_non_csp_non_stripped_pass_through() {
+        let headers = Some(vec![
+            hdr("x-custom-header", "keep-me"),
+            hdr("cache-control", "no-cache"),
+        ]);
+        let result = build_response_headers(
+            &headers,
+            &network::ResourceType::Script,
+            sid(8),
+        );
+        assert!(
+            result
+                .iter()
+                .any(|h| h.name == "x-custom-header" && h.value == "keep-me")
+        );
+        assert!(
+            result
+                .iter()
+                .any(|h| h.name == "cache-control" && h.value == "no-cache")
         );
     }
 }
