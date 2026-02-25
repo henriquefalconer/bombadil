@@ -404,7 +404,6 @@ async fn test_browser_lifecycle() {
         }
     }
 
-    log::info!("just changing for CI");
     browser.terminate().await.unwrap();
 }
 
