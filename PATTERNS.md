@@ -48,7 +48,6 @@
 - When sanitizing CSP headers, account for the browser's directive fallback chain. If `script-src` is absent, the browser falls back to `default-src` for script-loading decisions. Sanitization logic that only processes `script-src` and `script-src-elem` misses this fallback.
 - CSP values with semantic dependencies must be handled together. Stripping `'nonce-…'` or `'sha…'` from a directive that contains `'strict-dynamic'` leaves `'strict-dynamic'` without a trust anchor; the orphaned value must also be removed or the directive must be dropped entirely.
 - When modifying CSP headers, consider whether preserved directives can cause external side effects. `report-uri` and `report-to` direct the browser to POST violation reports to external endpoints; forwarding these after instrumentation-induced policy changes generates false reports.
-- When stripping CSP hash/nonce values from a directive, also remove any keyword that becomes semantically meaningless without them. `'unsafe-hashes'` without accompanying hashes has no effect but is dead syntax that misleads readers. Strip it alongside `'strict-dynamic'` when its trust anchors are removed.
 
 # Request Interception
 
@@ -87,8 +86,3 @@
 # Dev-Dependencies
 
 - Feature flags on dev-dependencies should be the minimum required for test functionality. Do not enable features speculatively; add them when a test concretely needs them and document which test drives the requirement (e.g., `compression-gzip` for `test_compressed_script`).
-
-# Repository Hygiene
-
-- Do not commit environment-specific build configuration (e.g., `.cargo/config.toml` with platform-specific linker settings) to the main codebase. These files break builds on other architectures. Use environment variables, CI-specific overlays, or document the setup in `AGENTS.md` instead.
-- Development workflow artifacts (AI prompts, iteration scripts, implementation plans, synthesis documents) do not belong in the repository. Keep them in local directories excluded by `.gitignore`, or remove them before merging.
