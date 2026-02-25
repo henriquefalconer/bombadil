@@ -56,8 +56,8 @@ No equivalent existed in `antithesishq/main`.
 
 ### Change 5: New unit test module
 
-`#[cfg(test)] mod tests` block with 29 tests total:
-- 22 tests for `sanitize_csp`: SHA-256/384/512 removal, nonce removal, mixed directives, no-script-src passthrough, empty result, multiple hashes with safe value, only-hash directive with other directives, `script-src-elem`, `default-src` fallback stripping (3 cases), `strict-dynamic` removal (3 cases), `report-uri`/`report-to` stripping (3 cases).
+`#[cfg(test)] mod tests` block with 26 tests total:
+- 19 tests for `sanitize_csp`: SHA-256/384/512 removal, nonce removal, mixed directives, no-script-src passthrough, empty result, multiple hashes with safe value, only-hash directive with other directives, `script-src-elem`, `default-src` fallback stripping (3 cases), `strict-dynamic` removal (3 cases), `report-uri`/`report-to` stripping (3 cases).
 - 7 tests for `build_response_headers`: stripped headers removed, content-type preserved, CSP dropped for Script, CSP sanitized for Document, synthetic etag appended, None headers produce only synthetic etag, non-CSP/non-stripped headers pass through.
 
 No unit tests existed in this file in `antithesishq/main`.

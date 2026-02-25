@@ -13,7 +13,7 @@
 - `run_browser_test` split into wrapper + `run_browser_test_with_router`
 - `Cargo.toml`: `compression-gzip` feature for `tower-http`
 - Section-separator comments removed from test module
+- Fixed test count in `COMPARISON.md` Change 5: "22 tests for sanitize_csp" → "19 tests for sanitize_csp"; "29 tests total" → "26 tests total"
 
 ## Remaining
 
-- Fix test count in `COMPARISON.md` Change 5: "22 tests for sanitize_csp" → "19 tests for sanitize_csp"; "29 tests total" → "26 tests total"
