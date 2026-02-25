@@ -2,7 +2,7 @@
 
 ## Completed
 
-All items implemented and tests passing.
+All core fix code and tests implemented and passing (28 unit tests, 4 integration tests).
 
 - `STRIPPED_RESPONSE_HEADERS` constant (etag, content-length, content-encoding, transfer-encoding, digest)
 - `sanitize_csp` function with default-src fallback, strict-dynamic orphan removal, report directive stripping
@@ -13,9 +13,8 @@ All items implemented and tests passing.
 - HTML fixtures, shared `tests/shared/script.js`, `make_csp_router` helper
 - `run_browser_test` split into wrapper + `run_browser_test_with_router`
 - `Cargo.toml`: `compression-gzip` feature for `tower-http`
-- Fixed `compressed-script/index.html`: removed `type="module"` from script tag
-- Removed stale `log::info!("just changing for CI")` debug line from `test_browser_lifecycle`
+- `test_compressed_script` fixture updated to use `<script type="module">` so the test distinguishes old (drops `content-type` → module MIME check fails) vs. new code (`content-type` preserved, `content-encoding` stripped → test passes); PATTERNS.md rule updated accordingly
 
 ## Remaining
 
-None.
+(none)
