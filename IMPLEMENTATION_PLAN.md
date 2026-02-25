@@ -2,25 +2,19 @@
 
 ## Completed
 
-All planned items have been implemented and all tests pass (78 unit + 15 integration).
-
-### Summary of completed work
+Core fix and tests are implemented. All 28 unit tests and 15 integration tests pass.
 
 - `STRIPPED_RESPONSE_HEADERS` constant (etag, content-length, content-encoding, transfer-encoding, digest)
 - `sanitize_csp` function with default-src fallback, strict-dynamic orphan removal, report directive stripping
 - `build_response_headers` helper with resource-type-aware CSP handling (drop for Script, sanitize for Document, passthrough for others)
 - `FulfillRequestParams` builder updated to use `build_response_headers`
-- 19 unit tests for `sanitize_csp`
-- 9 unit tests for `build_response_headers` (including 2 for `content-security-policy-report-only`)
+- 19 unit tests for `sanitize_csp`, 9 unit tests for `build_response_headers`
 - 4 integration tests: `test_external_module_script`, `test_compressed_script`, `test_csp_script`, `test_csp_document_directives_preserved`
-- HTML fixtures for all integration tests
+- HTML fixtures, shared `tests/shared/script.js`, `make_csp_router` helper
 - `run_browser_test` split into wrapper + `run_browser_test_with_router`
 - `Cargo.toml`: `compression-gzip` feature for `tower-http`
-- Shared `tests/shared/script.js`; `make_csp_router` helper
-- `test_compressed_script` uses `<script type="module">` so it fails on `main` (no content-type → MIME check fails) and passes on `develop` (content-type preserved)
-- `test_csp_script` restructured to verify both Script CSP stripping and Document CSP preservation: adds `img-src 'none'` to the CSP and checks for both "LOADED" (script ran) and "CSP_ACTIVE" (violation fired), so it fails on `main` (no doc CSP → no violation) and passes on `develop` (doc CSP sanitized, img-src remains)
-- `build_headers_drops_report_only_csp_for_script_resources` and `build_headers_sanitizes_report_only_csp_for_document_resources` unit tests added
 
 ## Remaining
 
-*(none)*
+- **Fix `compressed-script/index.html`**: Change `<script type="module" src="/shared/script.js">` to `<script src="/shared/script.js">`. PATTERNS.md explicitly prohibits mixing module MIME concerns into the compression test fixture — module loading is already covered by `test_external_module_script`. The test still fails on `antithesishq/main` because all headers are dropped (stale `content-encoding` after decompression would cause double-decompress / garbled script).
+- **Remove stale debug line**: Delete `log::info!("just changing for CI");` on line 407 of `tests/integration_tests.rs` (leftover CI cache-bust in `test_browser_lifecycle`).
