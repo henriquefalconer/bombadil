@@ -566,8 +566,6 @@ mod tests {
         );
     }
 
-    // ── build_response_headers ──────────────────────────────────────────────
-
     fn hdr(name: &str, value: &str) -> fetch::HeaderEntry {
         fetch::HeaderEntry {
             name: name.to_string(),

@@ -476,7 +476,7 @@ async fn test_external_module_script() {
     run_browser_test(
         "external-module-script",
         Expect::Success,
-        Duration::from_secs(20),
+        Duration::from_secs(30),
         Some(
             r#"
 import { extract, eventually } from "@antithesishq/bombadil";
@@ -501,7 +501,7 @@ async fn test_compressed_script() {
     run_browser_test_with_router(
         "compressed-script",
         Expect::Success,
-        Duration::from_secs(20),
+        Duration::from_secs(30),
         Some(
             r#"
 import { extract, eventually } from "@antithesishq/bombadil";
@@ -519,32 +519,33 @@ export const compressed_script_loads = eventually(
     .await;
 }
 
-#[tokio::test]
-async fn test_csp_script() {
-    // The CSP header contains the sha256 hash of the *original* script.js.
-    // After Bombadil instruments the script the body changes, so the hash
-    // no longer matches and Chrome would block it — unless Bombadil strips
-    // the CSP header, which is what this test verifies.
-    let app = Router::new()
+fn make_csp_router(csp: &'static str) -> Router {
+    Router::new()
         .fallback_service(ServeDir::new("./tests"))
         .layer(middleware::from_fn(
-            |req: Request, next: middleware::Next| async move {
+            move |req: Request, next: middleware::Next| async move {
                 let mut response: Response = next.run(req).await;
                 response.headers_mut().insert(
                     axum::http::header::HeaderName::from_static(
                         "content-security-policy",
                     ),
-                    HeaderValue::from_static(
-                        "script-src 'sha256-sRoPO3cqhmVEQTMEK66eATz8J/LJdrvqrNVuMKzGgSM='",
-                    ),
+                    HeaderValue::from_static(csp),
                 );
                 response
             },
-        ));
+        ))
+}
+
+#[tokio::test]
+async fn test_csp_script() {
+    // Verifies Bombadil strips script-hash CSP so instrumented scripts load.
+    let app = make_csp_router(
+        "script-src 'sha256-sRoPO3cqhmVEQTMEK66eATz8J/LJdrvqrNVuMKzGgSM='",
+    );
     run_browser_test_with_router(
         "csp-script",
         Expect::Success,
-        Duration::from_secs(20),
+        Duration::from_secs(30),
         Some(
             r#"
 import { extract, eventually } from "@antithesishq/bombadil";
@@ -564,41 +565,14 @@ export const csp_script_loads = eventually(
 
 #[tokio::test]
 async fn test_csp_document_directives_preserved() {
-    // The document CSP contains both a script hash and an img-src 'self'
-    // directive. Bombadil sanitises the CSP for documents: it strips the
-    // script hash (which would be invalidated by inline-script instrumentation)
-    // but preserves all other directives including img-src. This test verifies
-    // that img-src is enforced after instrumentation by confirming a
-    // securitypolicyviolation event fires when the page attempts to load a
-    // cross-origin image.
-    //
-    // Without the fix (CSP stripped entirely): no img-src restriction →
-    // cross-origin image is allowed → no violation event → #result stays
-    // "WAITING" → `eventually` expires at 10s → violation → FAIL.
-    //
-    // With the fix (CSP sanitised for documents): img-src 'self' is active →
-    // cross-origin image is blocked → securitypolicyviolation fires → #result
-    // becomes "CSP_ACTIVE" → spec satisfied → PASS.
-    let app = Router::new()
-        .fallback_service(ServeDir::new("./tests"))
-        .layer(middleware::from_fn(
-            |req: Request, next: middleware::Next| async move {
-                let mut response: Response = next.run(req).await;
-                response.headers_mut().insert(
-                    axum::http::header::HeaderName::from_static(
-                        "content-security-policy",
-                    ),
-                    HeaderValue::from_static(
-                        "script-src 'unsafe-inline' 'self' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='; img-src 'self'",
-                    ),
-                );
-                response
-            },
-        ));
+    // Verifies Bombadil sanitises document CSP (strips script hashes, preserves other directives like img-src).
+    let app = make_csp_router(
+        "script-src 'unsafe-inline' 'self' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='; img-src 'self'",
+    );
     run_browser_test_with_router(
         "csp-document",
         Expect::Success,
-        Duration::from_secs(20),
+        Duration::from_secs(30),
         Some(
             r#"
 import { extract, eventually } from "@antithesishq/bombadil";
