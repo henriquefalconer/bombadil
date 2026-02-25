@@ -12,6 +12,8 @@
 - When multiple tests share the same setup logic (e.g., building a router with specific middleware), extract that logic into a named helper function rather than duplicating the closure or builder inline.
 - When several integration tests verify the same class of property (e.g., "script loads and sets DOM text"), use a consistent spec structure: same `extract` pattern, same `eventually(...).within(...)` form, same baseline action export. Consistency across similar tests makes deviations visible and review easier.
 - Do not use section-separator comments (`// Item 1: ...`, `// --- ...`) inside unit test modules to organize tests by topic. Test ordering and `#[test]` names are sufficient grouping. If a module has so many tests that it needs internal headers, consider splitting into submodules.
+- A test fixture should only exercise the feature the test is named for. Do not add attributes, headers, or structural elements that implicitly test unrelated features. For example, a compression test fixture should use a plain `<script src="...">`, not `<script type="module" src="...">`, because module MIME type enforcement is a separate concern covered by its own test.
+- Each integration test should verify one behaviour. When two capabilities are tightly coupled (e.g., CSP stripping for scripts and CSP preservation for documents), a combined test is acceptable only if the spec property explicitly names both conditions and no individual test already covers each side.
 
 # Doc Comments
 
