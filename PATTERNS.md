@@ -10,6 +10,7 @@
 - All HTML fixtures for the same logical test pattern (e.g., "script loads and sets text content") should use identical structure. Do not vary whitespace, indentation style, or casing of HTML tags between fixtures that serve the same purpose.
 - When multiple test fixtures contain identical files (e.g., the same `script.js`), prefer referencing a shared file via a relative path in the HTML rather than duplicating the file in each fixture directory. If the fixtures must be self-contained, document why.
 - When multiple tests share the same setup logic (e.g., building a router with specific middleware), extract that logic into a named helper function rather than duplicating the closure or builder inline.
+- When several integration tests verify the same class of property (e.g., "script loads and sets DOM text"), use a consistent spec structure: same `extract` pattern, same `eventually(...).within(...)` form, same baseline action export. Consistency across similar tests makes deviations visible and review easier.
 - Do not use section-separator comments (`// Item 1: ...`, `// --- ...`) inside unit test modules to organize tests by topic. Test ordering and `#[test]` names are sufficient grouping. If a module has so many tests that it needs internal headers, consider splitting into submodules.
 
 # Doc Comments
@@ -26,6 +27,7 @@
 
 - When constructing response headers for `Fetch.fulfillRequest`, document why each header is stripped. The strip list is a security-sensitive surface — every entry and every omission should have a stated reason.
 - Headers that must NOT be stripped (e.g., `content-type`, which is required for ES module MIME type enforcement) should be called out in a comment near the strip list. The strip list documents removals; a complementary note should document critical preservations to prevent accidental regression.
+- When using a denylist approach (forward by default, strip listed headers), add a unit test that verifies each critical header is preserved. A comment in the strip list documents intent; a unit test enforces it against future regressions.
 - CDP's `Fetch.fulfillRequest` uses replacement semantics: providing `responseHeaders` replaces the entire original header set. Omitting a header is equivalent to actively removing it.
 - Any header whose validity depends on body content (hashes, lengths, encodings, integrity digests) becomes stale after instrumentation and must be accounted for in the strip list.
 - Prefer failing closed over failing open: when in doubt about whether a header is safe to forward after body modification, strip it.
@@ -55,3 +57,7 @@
 - Alias `serde_json` as `json` everywhere: `use serde_json as json;`.
 - Use `::` prefix to disambiguate crate names from local modules (e.g., `use ::url::Url;`).
 - When grouping multiple items from a single crate inside `{}`, order them alphabetically.
+
+# Dev-Dependencies
+
+- Feature flags on dev-dependencies should be the minimum required for test functionality. Do not enable features speculatively; add them when a test concretely needs them and document which test drives the requirement (e.g., `compression-gzip` for `test_compressed_script`).

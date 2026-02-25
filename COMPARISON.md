@@ -1,21 +1,20 @@
-# Code Changes: develop vs antithesishq/main
+# Comparison: develop vs antithesishq/main
 
-Common ancestor: `0e2913d` ("link to manual from README (#54)").
-`antithesishq/main` has not moved since the ancestor. All changes below are additions or modifications made on the `develop` branch. Only altered code is described — unchanged code is not reproduced.
+Only altered code is documented below. Unchanged code is not reproduced. Non-code files (documentation, prompts, scripts, build config) are excluded.
 
 ---
 
-## `src/browser/instrumentation.rs`
+## 1. `src/browser/instrumentation.rs`
 
-### Change 1: New constant `STRIPPED_RESPONSE_HEADERS`
+### 1.1 New constant: `STRIPPED_RESPONSE_HEADERS`
 
-Inserted before `instrument_js_coverage`. Defines a `&[&str]` of five lowercase header names stripped from intercepted responses: `etag`, `content-length`, `content-encoding`, `transfer-encoding`, `digest`. Each entry has a `//` comment explaining why it is stripped. A `///` doc comment above the constant explains why `content-security-policy` and `content-security-policy-report-only` are NOT listed (they receive resource-type-aware handling instead of unconditional stripping).
+Module-level `&[&str]` listing five lowercase header names stripped from every fulfilled response: `etag`, `content-length`, `content-encoding`, `transfer-encoding`, `digest`. Each entry has an inline `//` comment explaining why it must be removed. A `///` doc comment explains why CSP headers are NOT in this list (they receive resource-type-aware handling instead).
 
-No header strip list existed in `antithesishq/main`.
+**antithesishq/main:** No header strip list. All headers were replaced by a single synthetic `etag`.
 
-### Change 2: Replaced `FulfillRequestParams` header construction
+### 1.2 Changed: `FulfillRequestParams` builder call
 
-**antithesishq/main (removed):**
+**antithesishq/main:**
 ```rust
 .response_header(fetch::HeaderEntry {
     name: "etag".to_string(),
@@ -23,59 +22,67 @@ No header strip list existed in `antithesishq/main`.
 })
 // TODO: forward headers
 ```
-Used `.response_header()` (singular) to set only a synthetic ETag. All original response headers were silently dropped.
 
-**develop (replacement):**
+Used `.response_header()` (singular), which due to CDP replacement semantics replaced the entire upstream header set with just the `etag`. All original headers — including `content-type` — were silently dropped.
 
-A new binding `let resource_type = event.resource_type.clone();` captures the resource type before the builder borrows `event`.
+**develop:**
+```rust
+let resource_type = event.resource_type.clone();
 
-`.response_header()` was replaced with `.response_headers(build_response_headers(...))`, delegating to the new `build_response_headers` helper.
+// ...inside builder:
+.response_headers(build_response_headers(
+    &event.response_headers,
+    &resource_type,
+    source_id,
+))
+```
 
-### Change 3: New function `sanitize_csp`
+Captures `resource_type` before the builder borrows `event`, then delegates to the new `build_response_headers` helper via `.response_headers()` (plural).
 
-Private function appended after the existing `source_id` function. Parses a CSP header value by splitting on `;`, then for `script-src`, `script-src-elem`, and `default-src` (when no explicit `script-src`/`script-src-elem` is present) strips:
-- `'sha256-…'`, `'sha384-…'`, `'sha512-…'` values
-- `'nonce-…'` values
-- `'strict-dynamic'` (meaningless without a trust anchor after hash/nonce removal)
+### 1.3 New function: `sanitize_csp`
 
-Strips `report-uri` and `report-to` directives entirely. Preserves all other directives unchanged. Returns `None` when every directive was stripped (caller omits the header).
+Private function (`fn sanitize_csp(csp_value: &str) -> Option<String>`) that:
+- Splits CSP on `;` into directives
+- Detects whether `script-src` or `script-src-elem` is present
+- For `script-src`, `script-src-elem`, and `default-src` (when no explicit script-src exists): strips `'sha256-…'`, `'sha384-…'`, `'sha512-…'`, `'nonce-…'`, and `'strict-dynamic'` values
+- Strips `report-uri` and `report-to` directives entirely
+- Omits a directive if all its values were stripped
+- Returns `None` when no directives remain
 
-No CSP handling existed in `antithesishq/main`.
+**antithesishq/main:** No CSP handling.
 
-### Change 4: New function `build_response_headers`
+### 1.4 New function: `build_response_headers`
 
 Private function that encapsulates the header construction pipeline:
-1. Iterates `response_headers` via `.iter().flatten()`
-2. `.filter()` removes headers whose name case-insensitively matches any entry in `STRIPPED_RESPONSE_HEADERS`
-3. `.flat_map()` applies resource-type-aware CSP handling: for `content-security-policy` and `content-security-policy-report-only`, `Script` resources drop the header (`None`), `Document` resources pass through `sanitize_csp()`, and a `_ =>` arm preserves the header unchanged for any other resource type
-4. `.chain()` appends a synthetic ETag `fetch::HeaderEntry` (same value derivation as before)
+1. Iterates upstream `response_headers` via `.iter().flatten()`
+2. `.filter()` removes headers matching `STRIPPED_RESPONSE_HEADERS` (case-insensitive)
+3. `.flat_map()` applies resource-type-aware CSP handling: `Script` → drop CSP entirely; `Document` → sanitise via `sanitize_csp`; `_ =>` → preserve unchanged
+4. `.chain()` appends a synthetic `etag` with `source_id`
 
-Signature: `fn build_response_headers(response_headers: &Option<Vec<fetch::HeaderEntry>>, resource_type: &network::ResourceType, source_id: SourceId) -> Vec<fetch::HeaderEntry>`.
+**antithesishq/main:** No equivalent. Header construction was a single `.response_header()` call.
 
-No equivalent existed in `antithesishq/main`.
+### 1.5 New unit test module
 
-### Change 5: New unit test module
+`#[cfg(test)] mod tests` with 26 tests:
+- 19 for `sanitize_csp` (hash removal for SHA-256/384/512, nonce removal, mixed directives, empty results, `script-src-elem`, `default-src` fallback logic, `strict-dynamic` orphan removal, `report-uri`/`report-to` stripping)
+- 7 for `build_response_headers` (stripped header removal, content-type preservation, CSP drop for Script, CSP sanitise for Document, synthetic etag, None input, passthrough)
+- Two test helpers: `hdr(name, value)` and `sid(n)`
 
-`#[cfg(test)] mod tests` block with 26 tests total:
-- 19 tests for `sanitize_csp`: SHA-256/384/512 removal, nonce removal, mixed directives, no-script-src passthrough, empty result, multiple hashes with safe value, only-hash directive with other directives, `script-src-elem`, `default-src` fallback stripping (3 cases), `strict-dynamic` removal (3 cases), `report-uri`/`report-to` stripping (3 cases).
-- 7 tests for `build_response_headers`: stripped headers removed, content-type preserved, CSP dropped for Script, CSP sanitized for Document, synthetic etag appended, None headers produce only synthetic etag, non-CSP/non-stripped headers pass through.
-- A `// ── build_response_headers ──…` section separator comment divides the two groups.
-
-No unit tests existed in this file in `antithesishq/main`.
+**antithesishq/main:** No unit tests in this file.
 
 ---
 
-## `tests/integration_tests.rs`
+## 2. `tests/integration_tests.rs`
 
-### Change 6: Import additions
+### 2.1 Import additions
 
-**antithesishq/main (removed):**
+**antithesishq/main:**
 ```rust
 use axum::Router;
 use tower_http::services::ServeDir;
 ```
 
-**develop (replacement):**
+**develop:**
 ```rust
 use axum::{
     Router, extract::Request, http::HeaderValue, middleware, response::Response,
@@ -83,96 +90,59 @@ use axum::{
 use tower_http::{compression::CompressionLayer, services::ServeDir};
 ```
 
-New imports support middleware-based CSP injection and gzip compression in new tests.
+### 2.2 `run_browser_test` split into wrapper + `run_browser_test_with_router`
 
-### Change 7: `run_browser_test` split into wrapper + implementation
+The original function body moved into `run_browser_test_with_router(name, expect, timeout, spec, app)`. The wrapper `run_browser_test` creates the default `ServeDir` router and delegates.
 
-The original `run_browser_test` function body was moved into a new `run_browser_test_with_router` that accepts an additional `app: Router` parameter.
+Doc comment changes: "facitiliate" → "facilitate" (typo fix); URL pattern `http://localhost:{P}/tests/{name}.` → `http://localhost:{P}/{name}`.
 
-`run_browser_test` became a thin wrapper that constructs the default `ServeDir` router and delegates to `run_browser_test_with_router`.
+`run_browser_test_with_router` has a one-liner doc comment: `/// See [`run_browser_test`].`
 
-Moved code: `setup()`, semaphore acquisition, server creation, runner creation, event loop, timeout, outcome checking — all moved unchanged into `run_browser_test_with_router`. The only structural change is that `let app = Router::new().fallback_service(ServeDir::new("./tests"))` moved from inside the body to the wrapper.
+### 2.3 `make_csp_router` helper
 
-Doc comment on `run_browser_test_with_router`: `/// See [`run_browser_test`].`
-Doc comment corrections on `run_browser_test`: "facitiliate" → "facilitate", `http://localhost:{P}/tests/{name}` → `http://localhost:{P}/{name}`.
+```rust
+fn make_csp_router(csp: &'static str) -> Router
+```
 
-### Change 8: Four new integration tests
+Creates a router with `ServeDir` + middleware that injects `content-security-policy` on all responses. Shared by the two CSP integration tests.
 
-All four use `Duration::from_secs(20)` as the test timeout — a tier not present in `antithesishq/main` (which uses 3s, 5s, 30s, and 120s).
+### 2.4 Four new integration tests
 
-**`test_external_module_script`**: Default router, `Duration::from_secs(20)`. HTML fixture uses `<script type="module" src="...">`. Spec checks `#result` text becomes `"LOADED"` within 10s.
+All use `Duration::from_secs(30)` and `Expect::Success`. Each has a custom spec with `clicks` as the baseline action and an `eventually(...).within(10, "seconds")` property.
 
-**`test_compressed_script`**: Custom router with `CompressionLayer::new()`. `Duration::from_secs(20)`. Calls `run_browser_test_with_router`. Spec checks `#result` text becomes `"LOADED"` within 10s.
+| Test | Router | Fixture | Verifies |
+|------|--------|---------|----------|
+| `test_external_module_script` | default | `external-module-script/` (`<script type="module">`) | Module scripts load after instrumentation |
+| `test_compressed_script` | `CompressionLayer::new()` | `compressed-script/` | Gzip-compressed scripts load after instrumentation |
+| `test_csp_script` | `make_csp_router(hash CSP)` | `csp-script/` | Scripts load when CSP hash is invalidated by instrumentation |
+| `test_csp_document_directives_preserved` | `make_csp_router(mixed CSP)` | `csp-document/` | Document CSP: script hashes stripped, `img-src` preserved |
 
-**`test_csp_script`**: Custom router with `middleware::from_fn` injecting `content-security-policy: script-src 'sha256-sRoPO3cqhmVEQTMEK66eATz8J/LJdrvqrNVuMKzGgSM='` on all responses. `Duration::from_secs(20)`. Multi-line `//` comment block (7 lines) explaining the test rationale. Spec checks `#result` text becomes `"LOADED"` within 10s.
+CSP tests have a single-line `//` comment summarising purpose.
 
-**`test_csp_document_directives_preserved`**: Custom router with `middleware::from_fn` injecting a mixed CSP (`script-src 'unsafe-inline' 'self' 'sha256-AAAA…'; img-src 'self'`) on all responses. `Duration::from_secs(20)`. Multi-line `//` comment block (11 lines) explaining the test rationale, expected outcomes with and without the fix, and the mechanism. HTML fixture listens for `securitypolicyviolation` and sets `#result` to `"CSP_ACTIVE"`. Spec checks `#result` text becomes `"CSP_ACTIVE"` within 10s.
+### 2.5 New HTML fixture directories
 
-### Change 9: Four new HTML fixture directories
+| Directory | Content |
+|-----------|---------|
+| `tests/shared/script.js` | `document.getElementById("result").textContent = "LOADED";` — shared by three fixtures |
+| `tests/external-module-script/` | `index.html` with `<script type="module" src="/shared/script.js">` |
+| `tests/compressed-script/` | `index.html` with `<script src="/shared/script.js">` |
+| `tests/csp-script/` | `index.html` with `<script src="/shared/script.js">` |
+| `tests/csp-document/` | `index.html` with inline script that listens for `securitypolicyviolation` → sets `#result` to `"CSP_ACTIVE"` |
 
-`tests/external-module-script/` — `index.html` + `module.js`
-`tests/compressed-script/` — `index.html` + `script.js`
-`tests/csp-script/` — `index.html` + `script.js`
-`tests/csp-document/` — `index.html`
-
-All follow existing fixture structure: `<html>`, `<head>`, `<title>`, `<body>`, `<h1 id="result">WAITING</h1>`. Script fixtures set `#result` to `"LOADED"`. CSP document fixture listens for `securitypolicyviolation` and sets `#result` to `"CSP_ACTIVE"`.
+All follow existing fixture structure: `<html>`, `<head>`, `<title>`, `<body>`, `<h1 id="result">WAITING</h1>`.
 
 ---
 
-## `Cargo.toml`
+## 3. `Cargo.toml`
 
-### Change 10: Added `compression-gzip` feature to `tower-http`
-
+**antithesishq/main:**
 ```toml
-# antithesishq/main:
 tower-http = { version = "0.6.8", features = ["fs"] }
+```
 
-# develop:
+**develop:**
+```toml
 tower-http = { version = "0.6.8", features = ["fs", "compression-gzip"] }
 ```
 
-Dev-dependency only. Enables `CompressionLayer` for `test_compressed_script`.
-
-### Change 11: `Cargo.lock` transitive additions
-
-Three new crate entries: `async-compression`, `compression-codecs`, `compression-core`. Transitive dependencies of `tower-http/compression-gzip`.
-
----
-
-## `.cargo/config.toml`
-
-### Change 12: New build configuration file
-
-```toml
-[target.aarch64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-```
-
-Development environment configuration for aarch64 Linux. Not a code change — sandbox-specific.
-
----
-
-## `AGENTS.md`
-
-### Change 13: Appended sandbox build environment section
-
-Added a "Sandboxed Build Environment" section with instructions for building outside Nix: `CARGO_TARGET_DIR`, `RUST_MIN_STACK`, `.cargo/config.toml`, `esbuild`, and Chromium path.
-
-No other content in `AGENTS.md` was modified.
-
----
-
-## Non-code files added
-
-Workflow artifacts not shipped with the binary:
-
-- `PATTERNS.md` — Project conventions
-- `SECURITY.md` — Security issue tracking
-- `SECURITY_ANALYSIS.md` — Detailed problem analysis
-- `COMPARISON.md` — This file
-- `IMPLEMENTATION_PLAN.md` — Implementation tracking
-- `ISSUE.md` — Original issue description
-- `SYNTHESIS.md` — Architecture notes
-- `PROMPT_build.md`, `PROMPT_plan.md`, `PROMPT_security.md` — Agent prompt templates
-- `loop.sh` — Build/test automation script
+Dev-dependency only. Enables `CompressionLayer` for `test_compressed_script`. Adds three transitive crates to `Cargo.lock`: `async-compression`, `compression-codecs`, `compression-core`.
