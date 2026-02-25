@@ -1,20 +1,20 @@
 # Implementation Plan
 
-## Completed
+## Status
 
-All core fix code and tests implemented and passing (28 unit tests, 4 integration tests).
+**Complete.** All fix code and tests implemented and verified passing.
 
-- `STRIPPED_RESPONSE_HEADERS` constant (etag, content-length, content-encoding, transfer-encoding, digest)
-- `sanitize_csp` function with default-src fallback, strict-dynamic orphan removal, report directive stripping
-- `build_response_headers` helper with resource-type-aware CSP handling (drop for Script, sanitize for Document, passthrough for others)
-- `FulfillRequestParams` builder updated to use `build_response_headers`
-- 19 unit tests for `sanitize_csp`, 9 unit tests for `build_response_headers`
-- 4 integration tests: `test_external_module_script`, `test_compressed_script`, `test_csp_script`, `test_csp_document_directives_preserved`
-- HTML fixtures, shared `tests/shared/script.js`, `make_csp_router` helper
-- `run_browser_test` split into wrapper + `run_browser_test_with_router`
-- `Cargo.toml`: `compression-gzip` feature for `tower-http`
-- `test_compressed_script` fixture updated to use `<script type="module">` so the test distinguishes old (drops `content-type` → module MIME check fails) vs. new code (`content-type` preserved, `content-encoding` stripped → test passes); PATTERNS.md rule updated accordingly
+- 78 unit tests pass (including 28 for the header/CSP fix)
+- 15 integration tests pass (including 4 new ones for the fix)
+- `cargo fmt` clean, `cargo clippy` clean
 
-## Remaining
+## What Was Fixed
 
-(none)
+The `instrument_js_coverage` function in `src/browser/instrumentation.rs` dropped **all** upstream response headers when fulfilling intercepted requests via CDP's `Fetch.fulfillRequest`, replacing them with a single synthetic `etag`. This silently removed every security and functional header (CORS, HSTS, CSP, content-type, etc.) from Script and Document responses.
+
+## Fix Summary
+
+- `STRIPPED_RESPONSE_HEADERS` denylist: only 5 headers invalidated by instrumentation are stripped
+- `sanitize_csp`: resource-type-aware CSP handling (drop for Script, sanitize for Document)
+- `build_response_headers`: assembles forwarded headers with CSP logic + synthetic etag
+- 28 unit tests + 4 integration tests that each fail on the old code and pass on the fix
