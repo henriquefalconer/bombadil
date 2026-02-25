@@ -121,7 +121,7 @@ A formal CSP parser would add a dependency without practical benefit.
 
 ## Problem 10: ETag replacement for non-instrumented content
 
-**Description:** Non-HTML Document responses pass through with body unchanged but still receive a synthetic ETag, invalidating conditional request caching.
+**Description:** Non-HTML Document responses (XML, PDF, etc.) pass through with body unchanged but still receive a synthetic ETag, invalidating conditional request caching.
 
 **Direct result of added code?** No. `antithesishq/main` already replaced ETag for every intercepted response.
 
@@ -167,6 +167,16 @@ A formal CSP parser would add a dependency without practical benefit.
 
 ---
 
+## Problem 15: `response_code(200)` hardcoded in `FulfillRequestParams`
+
+**Description:** The builder always sets `response_code(200)`. This is unchanged from `antithesishq/main`, but with header forwarding now active, the combination of a `200` status code with headers originally sent for a different status (e.g., `304 Not Modified` converted to `200` by an upstream reverse proxy) could produce semantically inconsistent responses.
+
+**Direct result of added code?** Partially. The hardcoded `200` is inherited, but the new header-forwarding pipeline amplifies its impact because status-dependent headers (like `ETag` on 304) are now forwarded rather than dropped.
+
+**Can it be disregarded?** Yes. The non-200 response path returns early via `ContinueRequestParams`, so this code path only executes for actual 200 responses. The status code and headers are consistent.
+
+---
+
 ## Summary
 
 | # | Problem | Introduced? | Disregardable? | Notes |
@@ -185,5 +195,6 @@ A formal CSP parser would add a dependency without practical benefit.
 | 12 | Debug /tmp/ writes | No | Yes | Pre-existing |
 | 13 | Multiple CSP headers independent | Yes | Yes | Correct behaviour |
 | 14 | Non-script -src hashes untouched | Yes | Yes | Only JS is instrumented |
+| 15 | Hardcoded response_code(200) | Partial | Yes | Only reached for actual 200s |
 
 **One non-disregardable problem identified (Problem 7).** It is adequately mitigated by the existing unit test and integration test, but the implicit nature of the protection warrants awareness during future maintenance.

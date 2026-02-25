@@ -48,7 +48,7 @@ Changed from `.response_header()` (singular — one header replaces all) to `.re
 
 **antithesishq/main:** No CSP handling.
 
-**develop:** Adds `fn sanitize_csp(csp_value: &str) -> Option<String>` (private, 60 lines) which:
+**develop:** Adds `fn sanitize_csp(csp_value: &str) -> Option<String>` (private, ~60 lines) which:
 1. Splits on `;` into directives, trims whitespace, filters empties
 2. Detects presence of `script-src` or `script-src-elem` (case-insensitive)
 3. Strips `report-uri` and `report-to` directives entirely
@@ -144,8 +144,8 @@ Each test has a custom spec using `extract` + `eventually(...).within(10, "secon
 |------|---------|
 | `tests/shared/script.js` | `document.getElementById("result").textContent = "LOADED";` |
 | `tests/external-module-script/index.html` | Loads `/shared/script.js` as `<script type="module">` |
-| `tests/compressed-script/index.html` | Loads `/shared/script.js` as `<script type="module">` |
-| `tests/csp-script/index.html` | Loads `/shared/script.js` as `<script>` (no module), adds inline script for CSP violation detection via `securitypolicyviolation` event + test image |
+| `tests/compressed-script/index.html` | Loads `/shared/script.js` as `<script>` (classic, not module) |
+| `tests/csp-script/index.html` | Loads `/shared/script.js` as `<script>` (classic), adds inline script for CSP violation detection via `securitypolicyviolation` event + test image |
 | `tests/csp-document/index.html` | Inline script only: CSP violation detection via `securitypolicyviolation` event + test image |
 
 All fixtures follow existing structure: `<html>`, `<head>`, `<title>`, `<body>`, `<h1 id="result">WAITING</h1>`.
@@ -166,4 +166,45 @@ tower-http = { version = "0.6.8", features = ["fs"] }
 tower-http = { version = "0.6.8", features = ["fs", "compression-gzip"] }
 ```
 
-Adds `compression-gzip` feature to the `tower-http` dev-dependency. Required for `CompressionLayer` in `test_compressed_script`. Pulls in three transitive crates: `async-compression`, `compression-codecs`, `compression-core`.
+Adds `compression-gzip` feature to the `tower-http` dev-dependency. Required for `CompressionLayer` in `test_compressed_script`.
+
+---
+
+## Change 11: Stale debug log removal
+
+**File:** `tests/integration_tests.rs`
+
+**antithesishq/main:**
+```rust
+    log::info!("just changing for CI");
+    browser.terminate().await.unwrap();
+```
+
+**develop:**
+```rust
+    browser.terminate().await.unwrap();
+```
+
+Removes `log::info!("just changing for CI");` from `test_browser_lifecycle`. This line was a CI cache-bust artifact with no diagnostic value.
+
+---
+
+## Change 12: New imports in integration tests
+
+**File:** `tests/integration_tests.rs`
+
+**antithesishq/main:**
+```rust
+use axum::Router;
+use tower_http::services::ServeDir;
+```
+
+**develop:**
+```rust
+use axum::{
+    Router, extract::Request, http::HeaderValue, middleware, response::Response,
+};
+use tower_http::{compression::CompressionLayer, services::ServeDir};
+```
+
+Adds `Request`, `HeaderValue`, `middleware`, `Response` from axum and `CompressionLayer` from tower-http. All are used by the new test helpers (`make_csp_router`, `test_compressed_script`).

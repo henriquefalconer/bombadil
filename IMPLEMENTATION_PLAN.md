@@ -2,7 +2,7 @@
 
 ## Completed
 
-Core fix and tests are implemented. All 28 unit tests and 15 integration tests pass.
+All items implemented and tests passing.
 
 - `STRIPPED_RESPONSE_HEADERS` constant (etag, content-length, content-encoding, transfer-encoding, digest)
 - `sanitize_csp` function with default-src fallback, strict-dynamic orphan removal, report directive stripping
@@ -13,8 +13,9 @@ Core fix and tests are implemented. All 28 unit tests and 15 integration tests p
 - HTML fixtures, shared `tests/shared/script.js`, `make_csp_router` helper
 - `run_browser_test` split into wrapper + `run_browser_test_with_router`
 - `Cargo.toml`: `compression-gzip` feature for `tower-http`
+- Fixed `compressed-script/index.html`: removed `type="module"` from script tag
+- Removed stale `log::info!("just changing for CI")` debug line from `test_browser_lifecycle`
 
 ## Remaining
 
-- **Fix `compressed-script/index.html`**: Change `<script type="module" src="/shared/script.js">` to `<script src="/shared/script.js">`. PATTERNS.md explicitly prohibits mixing module MIME concerns into the compression test fixture — module loading is already covered by `test_external_module_script`. The test still fails on `antithesishq/main` because all headers are dropped (stale `content-encoding` after decompression would cause double-decompress / garbled script).
-- **Remove stale debug line**: Delete `log::info!("just changing for CI");` on line 407 of `tests/integration_tests.rs` (leftover CI cache-bust in `test_browser_lifecycle`).
+None.
