@@ -18,6 +18,12 @@ use crate::instrumentation::source_id::SourceId;
 /// Response headers that must be stripped after script instrumentation.
 ///
 /// Each entry is lower-cased for case-insensitive matching.
+///
+/// Note: `content-security-policy` and `content-security-policy-report-only` are NOT
+/// listed here. CSP stripping is resource-type-aware: for Script responses the whole
+/// header is dropped (script body instrumentation invalidates hash-based `script-src`
+/// values); for Document responses the header is sanitised via [`sanitize_csp`] instead
+/// of being removed wholesale. See the `FulfillRequestParams` construction below.
 const STRIPPED_RESPONSE_HEADERS: &[&str] = &[
     // Replaced with an instrumentation-stable source ID derived from the
     // original ETag or body hash, so the upstream value is always stale.
@@ -31,13 +37,10 @@ const STRIPPED_RESPONSE_HEADERS: &[&str] = &[
     // Same reason as content-encoding: the transfer framing is gone once CDP
     // hands us the raw bytes.
     "transfer-encoding",
-    // Script hashes in the CSP digest no longer match the rewritten body.
-    "content-security-policy",
-    // Report-only variant of CSP — same hash-mismatch problem.
-    "content-security-policy-report-only",
-    // Prevent HSTS pinning on ephemeral localhost test sessions, which would
-    // break subsequent runs that serve over plain HTTP.
-    "strict-transport-security",
+    // The Digest header (RFC 3230 / RFC 9530) contains a hash of the response
+    // body. After instrumentation that hash is wrong; a service worker
+    // validating it would reject the instrumented script.
+    "digest",
 ];
 
 pub async fn instrument_js_coverage(page: Arc<Page>) -> Result<()> {
@@ -180,6 +183,9 @@ pub async fn instrument_js_coverage(page: Arc<Page>) -> Result<()> {
                     );
                 };
 
+                // Capture resource type before the iterator borrows `event`.
+                let resource_type = event.resource_type.clone();
+
                 page.execute(
                     fetch::FulfillRequestParams::builder()
                         .request_id(event.request_id.clone())
@@ -197,7 +203,34 @@ pub async fn instrument_js_coverage(page: Arc<Page>) -> Result<()> {
                                         },
                                     )
                                 })
-                                .cloned()
+                                .flat_map(move |h| {
+                                    // CSP headers require resource-type-aware
+                                    // handling: strip entirely for scripts
+                                    // (instrumentation invalidates all hash
+                                    // values), sanitise for documents (preserve
+                                    // non-hash directives like img-src,
+                                    // frame-ancestors, connect-src, …).
+                                    let is_csp = h.name.eq_ignore_ascii_case(
+                                        "content-security-policy",
+                                    ) || h.name.eq_ignore_ascii_case(
+                                        "content-security-policy-report-only",
+                                    );
+                                    if is_csp {
+                                        match resource_type {
+                                            network::ResourceType::Script => {
+                                                None
+                                            }
+                                            _ => sanitize_csp(&h.value).map(
+                                                |v| fetch::HeaderEntry {
+                                                    name: h.name.clone(),
+                                                    value: v,
+                                                },
+                                            ),
+                                        }
+                                    } else {
+                                        Some(h.clone())
+                                    }
+                                })
                                 .chain(std::iter::once(fetch::HeaderEntry {
                                     name: "etag".to_string(),
                                     value: format!("{}", source_id.0),
@@ -260,5 +293,144 @@ fn source_id(headers: HashMap<String, String>, body: &str) -> SourceId {
         SourceId::hash(etag)
     } else {
         SourceId::hash(body)
+    }
+}
+
+/// Strip only instrumentation-sensitive values from a CSP header, preserving all other
+/// directives.
+///
+/// Removes `'sha256-…'`, `'sha384-…'`, `'sha512-…'`, and `'nonce-…'` values from
+/// `script-src` and `script-src-elem` directives — the only directives whose hash
+/// values are invalidated by script body instrumentation. All other directives are
+/// forwarded unchanged.
+///
+/// If a `script-src` or `script-src-elem` directive contained only hash or nonce values,
+/// the directive is omitted entirely rather than left empty (an empty `script-src` would
+/// block all scripts, which is worse than having no directive at all, since the browser
+/// would fall back to `default-src`).
+///
+/// Returns `None` when every directive was stripped (the caller should omit the header).
+fn sanitize_csp(csp_value: &str) -> Option<String> {
+    let mut result: Vec<String> = Vec::new();
+    for directive in csp_value.split(';') {
+        let directive = directive.trim();
+        if directive.is_empty() {
+            continue;
+        }
+        let lower = directive.to_lowercase();
+        let is_script_src = lower.starts_with("script-src ")
+            || lower == "script-src"
+            || lower.starts_with("script-src-elem ")
+            || lower == "script-src-elem";
+        if is_script_src {
+            let mut parts = directive.splitn(2, char::is_whitespace);
+            let name = parts.next().unwrap_or("");
+            let values_str = parts.next().unwrap_or("").trim();
+            let filtered: Vec<&str> = values_str
+                .split_whitespace()
+                .filter(|v| {
+                    let lv = v.to_lowercase();
+                    !lv.starts_with("'sha256-")
+                        && !lv.starts_with("'sha384-")
+                        && !lv.starts_with("'sha512-")
+                        && !lv.starts_with("'nonce-")
+                })
+                .collect();
+            if !filtered.is_empty() {
+                result.push(format!("{} {}", name, filtered.join(" ")));
+            }
+            // If all values were hashes/nonces, omit the directive entirely.
+        } else {
+            result.push(directive.to_string());
+        }
+    }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result.join("; "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_csp_removes_sha256() {
+        assert_eq!(
+            sanitize_csp("script-src 'sha256-abc123=' 'unsafe-inline'"),
+            Some("script-src 'unsafe-inline'".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_removes_sha384() {
+        assert_eq!(
+            sanitize_csp("script-src 'sha384-abc123=' 'self'"),
+            Some("script-src 'self'".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_removes_sha512() {
+        assert_eq!(
+            sanitize_csp("script-src 'sha512-abc123=' 'self'"),
+            Some("script-src 'self'".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_removes_nonce() {
+        assert_eq!(
+            sanitize_csp("script-src 'nonce-xyz123' 'self'"),
+            Some("script-src 'self'".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_mixed_directives() {
+        assert_eq!(
+            sanitize_csp("script-src 'sha256-abc' 'self'; img-src 'self'"),
+            Some("script-src 'self'; img-src 'self'".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_no_script_src() {
+        assert_eq!(
+            sanitize_csp("img-src 'self'; frame-ancestors 'none'"),
+            Some("img-src 'self'; frame-ancestors 'none'".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_empty_result() {
+        assert_eq!(sanitize_csp("script-src 'sha256-abc'"), None);
+    }
+
+    #[test]
+    fn sanitize_csp_multiple_hashes_with_safe_value() {
+        assert_eq!(
+            sanitize_csp(
+                "script-src 'sha256-a' 'sha384-b' 'sha512-c' 'nonce-xyz' 'self'"
+            ),
+            Some("script-src 'self'".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_only_hash_directive_removed_others_kept() {
+        assert_eq!(
+            sanitize_csp("script-src 'sha256-a'; default-src 'self'"),
+            Some("default-src 'self'".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_csp_script_src_elem() {
+        assert_eq!(
+            sanitize_csp("script-src-elem 'sha256-abc' 'unsafe-inline'"),
+            Some("script-src-elem 'unsafe-inline'".to_string())
+        );
     }
 }
