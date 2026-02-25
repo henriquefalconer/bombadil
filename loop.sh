@@ -1,17 +1,18 @@
 #!/bin/bash
 set -euo pipefail   # Exit on error, undefined vars, and pipe failures
 
-# Usage: ./loop.sh [plan|security] [max_iterations] [--no-sandbox] [--goal <text>]
+# Usage: ./loop.sh [plan|security] [max_iterations] [--no-sandbox] [--goal <text>] [--ref-branch <branch>]
 # Examples:
-#   ./loop.sh plan 3                   # Plan mode, max 3 iters, docker
-#   ./loop.sh plan 3 --no-sandbox      # Plan mode, max 3 iters, claude CLI + confirmation
-#   ./loop.sh plan 3 --goal "feature"  # Plan mode, max 3 iters, custom goal
-#   ./loop.sh plan                     # Plan mode, will ask you interactively for goal
-#   ./loop.sh security 2               # Security mode, max 2 iters, docker
-#   ./loop.sh security --no-sandbox    # Security mode, unlimited, claude CLI + confirmation
-#   ./loop.sh                          # Build mode, unlimited, via docker sandbox
-#   ./loop.sh --no-sandbox             # Build mode, unlimited, via claude CLI directly + confirmation
-#   ./loop.sh 20 --no-sandbox          # Build mode, max 20, claude CLI + confirmation
+#   ./loop.sh plan 3                         # Plan mode, max 3 iters, docker
+#   ./loop.sh plan 3 --no-sandbox            # Plan mode, max 3 iters, claude CLI + confirmation
+#   ./loop.sh plan 3 --goal "feature"        # Plan mode, max 3 iters, custom goal
+#   ./loop.sh plan                           # Plan mode, will ask you interactively for goal
+#   ./loop.sh security 2                     # Security mode, max 2 iters, docker
+#   ./loop.sh security --no-sandbox          # Security mode, unlimited, claude CLI + confirmation
+#   ./loop.sh security --ref-branch develop  # Security mode, compare main against develop
+#   ./loop.sh                                # Build mode, unlimited, via docker sandbox
+#   ./loop.sh --no-sandbox                   # Build mode, unlimited, via claude CLI directly + confirmation
+#   ./loop.sh 20 --no-sandbox                # Build mode, max 20, claude CLI + confirmation
 
 # Color and style definitions
 GREEN_BOLD="\033[1;38;2;40;254;20m"    # #28FE14 + bold
@@ -25,6 +26,7 @@ RESET="\033[0m"
 
 USE_SANDBOX=true
 GOAL_TEXT=""
+REF_BRANCH=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -37,6 +39,12 @@ while [[ $# -gt 0 ]]; do
             shift
             [[ $# -eq 0 ]] && { echo -e "${RED_BOLD}Error: --goal requires a value${RESET}"; exit 1; }
             GOAL_TEXT="$1"
+            shift
+            ;;
+        --ref-branch)
+            shift
+            [[ $# -eq 0 ]] && { echo -e "${RED_BOLD}Error: --ref-branch requires a value${RESET}"; exit 1; }
+            REF_BRANCH="$1"
             shift
             ;;
         *)
@@ -202,6 +210,10 @@ else
     FINAL_PROMPT="$PROMPT_CONTENT"
 fi
 
+if [ -n "$REF_BRANCH" ]; then
+    FINAL_PROMPT="${FINAL_PROMPT//\[ref-branch\]/$REF_BRANCH}"
+fi
+
 # Select model
 if [ "$MODE" = "build" ]; then
     MODEL="sonnet"   # for speed
@@ -221,6 +233,7 @@ echo -e "${GREEN_BOLD}Mode:         $MODE${RESET}"
 echo -e "${GREEN_BOLD}Model:        $MODEL${RESET}"
 echo -e "${GREEN_BOLD}Prompt:       $PROMPT_FILE${RESET}"
 [ -n "$GOAL_TEXT" ] && echo -e "${GREEN_BOLD}Goal:         $GOAL_TEXT${RESET}"
+[ -n "$REF_BRANCH" ] && echo -e "${GREEN_BOLD}Ref branch:   $REF_BRANCH${RESET}"
 echo -e "${GREEN_BOLD}Branch:       $CURRENT_BRANCH${RESET}"
 echo -e "${GREEN_BOLD}Execution:    $(if $USE_SANDBOX; then echo "docker sandbox"; else echo "claude CLI (direct)${RESET}"; fi)${RESET}"
 [ $MAX_ITERATIONS -gt 0 ] && echo -e "${GREEN_BOLD}Max:          $MAX_ITERATIONS iterations${RESET}"
