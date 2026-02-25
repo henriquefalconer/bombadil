@@ -28,6 +28,9 @@
 - Prefer failing closed over failing open: when in doubt about whether a header is safe to forward after body modification, strip it.
 - Header stripping decisions must account for resource type. A header that is safe to strip from a Script response may not be safe to strip from a Document response. When the same `FulfillRequestParams` code path serves multiple resource types, either use separate denylists or verify that each entry is valid for all resource types that pass through it.
 - Keep the `FulfillRequestParams` builder call simple. Move header filtering, transformation, and conditional logic into a named helper function so that the builder reads as a sequence of named values. Inline iterator chains with closures, conditionals, and function calls inside a builder are hard to review and easy to get wrong.
+- When sanitizing CSP headers, account for the browser's directive fallback chain. If `script-src` is absent, the browser falls back to `default-src` for script-loading decisions. Sanitization logic that only processes `script-src` and `script-src-elem` misses this fallback.
+- CSP values with semantic dependencies must be handled together. Stripping `'nonce-…'` or `'sha…'` from a directive that contains `'strict-dynamic'` leaves `'strict-dynamic'` without a trust anchor; the orphaned value must also be removed or the directive must be dropped entirely.
+- When modifying CSP headers, consider whether preserved directives can cause external side effects. `report-uri` and `report-to` direct the browser to POST violation reports to external endpoints; forwarding these after instrumentation-induced policy changes generates false reports.
 
 # Pattern Matching
 

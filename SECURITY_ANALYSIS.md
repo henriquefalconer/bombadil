@@ -1,10 +1,10 @@
 # Security Analysis: Fundamental Problems and Risky Assumptions
 
-This document covers every identified problem and assumption in the code added to `main` (relative to `antithesishq/main`), the reasoning for whether each should be acted on, and the projected consequences of the ones that matter.
+This document covers every identified problem and assumption in the code added to `develop` (relative to `antithesishq/main`), the reasoning for whether each should be acted on, and the projected consequences of the ones that matter.
 
 ## Context
 
-`antithesishq/main` dropped all response headers when fulfilling intercepted requests, adding only a synthetic `etag`. This was a known gap marked `// TODO: forward headers`. The local `main` branch replaces this with a header-forwarding pipeline that strips specific headers and applies resource-type-aware CSP sanitization. The analysis below evaluates the new code, not the pre-existing gap.
+`antithesishq/main` dropped all response headers when fulfilling intercepted requests, adding only a synthetic `etag`. This was a known gap marked `// TODO: forward headers`. The `develop` branch replaces this with a header-forwarding pipeline that strips specific headers and applies resource-type-aware CSP sanitization. The analysis below evaluates the new code, not the pre-existing gap.
 
 ---
 
@@ -115,7 +115,7 @@ Only `Script` and `Document` resource types are currently registered for interce
 
 ---
 
-## Problem 5: `vary` header forwarded after `content-encoding` removal
+## Problem 5: `Vary` header forwarded after `content-encoding` removal
 
 ### Description
 
@@ -179,7 +179,7 @@ Range requests against script and HTML document resources are exceedingly rare. 
 |---|---------|----------|---------------|
 | 1 | `default-src` hash fallback not handled in `sanitize_csp` | High | Yes — sanitize hashes in `default-src` when no `script-src` is present |
 | 2 | `'strict-dynamic'` meaningless after nonce stripping | High | Yes — strip or account for `'strict-dynamic'` when nonces are removed |
-| 3 | CSP violation reports to application endpoints | Medium | Consider stripping `report-uri`/`report-to` from sanitized CSP, or stripping nonces only from the enforcing header (not report-only) |
+| 3 | CSP violation reports to application endpoints | Medium | Consider stripping `report-uri`/`report-to` from sanitized CSP |
 | 4 | Resource type wildcard in CSP match | Low | Replace `_` with explicit `network::ResourceType::Document` |
 | 5 | `Vary` header forwarded after encoding removal | Low | Negligible for testing tool use case |
 | 6 | ETag replacement for non-instrumented content | None | Inherited from antithesishq/main |
