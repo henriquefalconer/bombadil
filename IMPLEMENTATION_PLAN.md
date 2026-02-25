@@ -18,7 +18,7 @@ Add to the header strip list at line 169:
 - `"content-security-policy-report-only"` — same reason as above
 - `"strict-transport-security"` — could pin HSTS on localhost, breaking subsequent test runs (Low — SECURITY.md)
 
-Add a comment above the array explaining why these headers are stripped (body-dependent headers become stale after instrumentation).
+Add a comment above the array explaining why these headers are stripped (body-dependent headers become stale after instrumentation, and security headers like HSTS can interfere with local testing).
 
 ### 2. Add CSP integration test (`test_csp_script`)
 
@@ -38,3 +38,11 @@ Both tests violate PATTERNS.md in three ways:
 - **Doc comments:** Remove `///` doc comments from both test functions (lines 471–475 and 498–505)
 - **Action export:** Change `export { scroll }` to `export { clicks }` in both specs
 - **Timeout ratio:** Change `Duration::from_secs(10)` to `Duration::from_secs(20)` in both tests (test timeout must be ≥2× the LTL `.within()` bound to prevent vacuous pass)
+
+### 4. Fix doc comment placement on `run_browser_test` helpers
+
+Per PATTERNS.md: "the wrapper (the function most tests call) retains the full doc comment." Currently the doc comment is on `run_browser_test_with_router` (line 55) while `run_browser_test` (line 209, the wrapper most tests call) has none.
+
+- Move the doc comment from `run_browser_test_with_router` to `run_browser_test`
+- Add a brief one-liner on `run_browser_test_with_router` referencing the wrapper (e.g., `/// See [`run_browser_test`].`)
+- Review the moved doc comment for accuracy per PATTERNS.md ("If you modify any part of a doc comment, verify the entire comment") — fix the typo "facitiliate" → "facilitate", and update the first line to remove "and a custom router" since the wrapper doesn't take a router parameter
