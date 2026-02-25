@@ -25,11 +25,17 @@ No new vulnerabilities are introduced. The changes strictly improve correctness 
 
 - **The denylist is conservative.** It strips all headers whose validity depends on body content (hashes, lengths, encodings, integrity digests). The list is documented with rationale for each entry.
 
-- **Pre-existing concerns** (debug writes to `/tmp/`, `source_id` using request headers instead of response headers, SRI incompatibility) are inherited from `antithesishq/main` and not affected by these changes.
+- **Pre-existing concerns** (debug writes to `/tmp/`, `source_id` using request headers instead of response headers, SRI incompatibility, CSP meta tags in HTML, UTF-8 body assumption) are inherited from `antithesishq/main` and not affected by these changes.
 
 ## Non-Disregardable Risk
 
 **`content-type` preservation is implicit.** The header that caused the original bug (`content-type` being dropped) is protected only by its absence from the denylist. No compile-time or runtime assertion prevents it from being accidentally added. The unit test `build_headers_preserves_content_type` and the integration test `test_external_module_script` guard against regression, but the protection is test-dependent. Future maintainers editing the strip list should be aware of this dependency.
+
+## Known Limitations
+
+- **CSP meta tags** (`<meta http-equiv="Content-Security-Policy">`) in HTML are not sanitised — only HTTP response headers are handled. Pages relying on meta-tag CSP with script hashes may still block instrumented inline scripts. This is an HTML-level concern outside the scope of header handling.
+
+- **SRI** (`integrity` attribute on `<script>` tags) will fail after instrumentation. This is inherent to body modification and pre-existing.
 
 ## Accepted Trade-offs
 

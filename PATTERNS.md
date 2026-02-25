@@ -1,14 +1,14 @@
 # Integration Tests
 
 - Test functions do not carry `///` doc comments. The test name and the spec string inside the body should be self-explanatory. Rationale for a code change belongs at the change site in production code or in the commit message.
-- Keep inline `//` comments on test functions to a minimum. If a test's purpose is not clear from its name and spec string, improve the name or the spec before adding a comment block. A one-line comment for non-obvious setup is acceptable; multi-line explanations are not.
+- Keep inline `//` comments on test functions to a minimum. If a test's purpose is not clear from its name and spec string, improve the name or the spec before adding a comment block. A one-line comment for non-obvious setup is acceptable; multi-line explanations are not. Historical context (e.g., how main vs develop differ, why a regression test was added) belongs in commit messages, not in test bodies.
 - When a test provides a custom spec and needs interaction to keep the runner loop cycling, export `clicks` as the baseline action. Only export a different action set when the test specifically exercises that action type.
 - Use `TEST_TIMEOUT_SECONDS` (120s) as the test timeout unless there is a concrete reason for a shorter bound. When a shorter bound is used, it must be at least 2x any LTL `.within()` value in the spec, because the harness treats `Timeout` as `Success` for `Expect::Success` tests. Only use existing timeout tiers (3s, 5s, 30s, 120s); do not introduce new values.
 - When refactoring a shared helper into a wrapper and a lower-level implementation, the wrapper (the function most tests call) retains the full doc comment. The lower-level function gets a brief one-liner referencing the wrapper.
 - If you modify any part of a doc comment, verify the entire comment for factual correctness. Fixing a typo while leaving a wrong URL or outdated description signals carelessness.
 - Test HTML fixtures should follow the structure used by existing fixtures in the `tests/` directory: include `<html>`, `<head>`, and `<title>` elements. Omit `<!DOCTYPE html>`, `<meta>`, viewport tags, and styling unless the test specifically exercises them. The `<title>` should be a human-readable name for the test case.
 - All HTML fixtures for the same logical test pattern (e.g., "script loads and sets text content") should use identical structure. Do not vary whitespace, indentation style, or casing of HTML tags between fixtures that serve the same purpose.
-- When multiple test fixtures contain identical files (e.g., the same `script.js`), prefer referencing a shared file via a relative path in the HTML rather than duplicating the file in each fixture directory. If the fixtures must be self-contained, document why.
+- When multiple test fixtures contain identical files (e.g., the same `script.js`), place the shared file in the `tests/shared/` directory and reference it via an absolute path in the HTML (e.g., `/shared/script.js`). Do not duplicate files across fixture directories.
 - When multiple tests share the same setup logic (e.g., building a router with specific middleware), extract that logic into a named helper function rather than duplicating the closure or builder inline.
 - When several integration tests verify the same class of property (e.g., "script loads and sets DOM text"), use a consistent spec structure: same `extract` pattern, same `eventually(...).within(...)` form, same baseline action export. Consistency across similar tests makes deviations visible and review easier.
 - A test fixture should only exercise the feature the test is named for. Do not add attributes, headers, or structural elements that implicitly test unrelated features. For example, a compression test fixture should use a plain `<script src="...">`, not `<script type="module" src="...">`, because module MIME type enforcement is a separate concern covered by its own test.
@@ -65,7 +65,8 @@
 
 - Alias `serde_json` as `json` everywhere: `use serde_json as json;`.
 - Use `::` prefix to disambiguate crate names from local modules (e.g., `use ::url::Url;`).
-- When grouping multiple items from a single crate inside `{}`, order them alphabetically.
+- Group imports by source: external crates first, then `crate::` local imports, separated by a blank line.
+- When grouping multiple items from a single crate inside `{}`, order them alphabetically by the full path of each item (e.g., `extract::Request` before `http::HeaderValue` before `middleware`).
 
 # Dev-Dependencies
 

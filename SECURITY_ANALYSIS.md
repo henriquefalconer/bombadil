@@ -177,6 +177,26 @@ A formal CSP parser would add a dependency without practical benefit.
 
 ---
 
+## Problem 16: CSP meta tags in HTML are not sanitised
+
+**Description:** Pages can set CSP via `<meta http-equiv="Content-Security-Policy" content="script-src 'sha256-...'">` in addition to (or instead of) HTTP headers. The header-level sanitisation in `build_response_headers` does not affect meta-tag CSP. If a page uses meta-tag CSP with script hashes, inline scripts modified by `instrument_inline_scripts` would fail the hash check.
+
+**Direct result of added code?** No — meta-tag CSP was equally unhandled in `antithesishq/main`. However, the new code creates an expectation that CSP is "handled," which could lead to confusion when meta-tag CSP blocks instrumented scripts.
+
+**Can it be disregarded?** Yes. Meta-tag CSP is an HTML-level concern, not a header-level concern. Handling it would require modifying the HTML instrumentation pipeline (`instrument_inline_scripts`), which is a separate system. The header-forwarding change set is correctly scoped to HTTP response headers. Additionally, meta-tag CSP does not support `report-uri` or `report-to`, so the false-reporting concern does not apply.
+
+---
+
+## Problem 17: `String::from_utf8` body decoding assumes UTF-8 encoding
+
+**Description:** The body is decoded via `String::from_utf8(BASE64_STANDARD.decode(bytes)?)`. If the original script uses a non-UTF-8 encoding (e.g., Shift-JIS), this fails with an error or silently produces mojibake. With `content-type` now forwarded, the browser sees `charset=shift_jis` but receives content that was decoded as UTF-8, creating a mismatch.
+
+**Direct result of added code?** No — the decoding logic is unchanged from `antithesishq/main`. However, content-type forwarding (which preserves the `charset` parameter) makes the mismatch visible to the browser, whereas previously (no content-type) the browser would default to UTF-8.
+
+**Can it be disregarded?** Yes. Modern web development overwhelmingly uses UTF-8. The HTML spec recommends UTF-8, and all major build tools emit it. Encountering non-UTF-8 scripts in practice is extremely rare, and the `from_utf8` call would fail with a clear error rather than silently corrupting content.
+
+---
+
 ## Summary
 
 | # | Problem | Introduced? | Disregardable? | Notes |
@@ -196,5 +216,7 @@ A formal CSP parser would add a dependency without practical benefit.
 | 13 | Multiple CSP headers independent | Yes | Yes | Correct behaviour |
 | 14 | Non-script -src hashes untouched | Yes | Yes | Only JS is instrumented |
 | 15 | Hardcoded response_code(200) | Partial | Yes | Only reached for actual 200s |
+| 16 | CSP meta tags unhandled | No | Yes | HTML-level concern, out of scope |
+| 17 | UTF-8 body assumption | No | Yes | Pre-existing, rare in practice |
 
 **One non-disregardable problem identified (Problem 7).** It is adequately mitigated by the existing unit test and integration test, but the implicit nature of the protection warrants awareness during future maintenance.
