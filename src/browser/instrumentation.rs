@@ -15,6 +15,31 @@ use tokio::spawn;
 use crate::instrumentation;
 use crate::instrumentation::source_id::SourceId;
 
+/// Response headers that must be stripped after script instrumentation.
+///
+/// Each entry is lower-cased for case-insensitive matching.
+const STRIPPED_RESPONSE_HEADERS: &[&str] = &[
+    // Replaced with an instrumentation-stable source ID derived from the
+    // original ETag or body hash, so the upstream value is always stale.
+    "etag",
+    // Body size changes when we rewrite the script, so the declared length
+    // no longer matches the actual bytes sent.
+    "content-length",
+    // CDP already returns a decompressed body; re-advertising a compression
+    // encoding would cause the browser to double-decompress.
+    "content-encoding",
+    // Same reason as content-encoding: the transfer framing is gone once CDP
+    // hands us the raw bytes.
+    "transfer-encoding",
+    // Script hashes in the CSP digest no longer match the rewritten body.
+    "content-security-policy",
+    // Report-only variant of CSP — same hash-mismatch problem.
+    "content-security-policy-report-only",
+    // Prevent HSTS pinning on ephemeral localhost test sessions, which would
+    // break subsequent runs that serve over plain HTTP.
+    "strict-transport-security",
+];
+
 pub async fn instrument_js_coverage(page: Arc<Page>) -> Result<()> {
     page.execute(
         fetch::EnableParams::builder()
@@ -166,24 +191,7 @@ pub async fn instrument_js_coverage(page: Arc<Page>) -> Result<()> {
                                 .iter()
                                 .flatten()
                                 .filter(|h| {
-                                    // Strip headers that become stale after
-                                    // instrumentation: body-dependent headers
-                                    // (length, encoding, CSP content hashes)
-                                    // are invalidated when the script body is
-                                    // rewritten. HSTS is also stripped to
-                                    // prevent pinning HTTPS on localhost, which
-                                    // would break subsequent test runs.
-                                    ![
-                                        "etag",
-                                        "content-length",
-                                        "content-encoding",
-                                        "transfer-encoding",
-                                        "content-security-policy",
-                                        "content-security-policy-report-only",
-                                        "strict-transport-security",
-                                    ]
-                                    .iter()
-                                    .any(
+                                    !STRIPPED_RESPONSE_HEADERS.iter().any(
                                         |name| {
                                             h.name.eq_ignore_ascii_case(name)
                                         },

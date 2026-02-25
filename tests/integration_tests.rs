@@ -206,7 +206,7 @@ async fn run_browser_test_with_router(
 ///
 /// The test starts at:
 ///
-///     http://localhost:{P}/tests/{name}.
+///     http://localhost:{P}/{name}
 ///
 /// Which means that every named test case directory should have an index.html file.
 async fn run_browser_test(
