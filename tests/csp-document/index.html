@@ -1,0 +1,16 @@
+<html>
+  <head>
+    <title>CSP Document</title>
+  </head>
+  <body>
+    <h1 id="result">WAITING</h1>
+    <script>
+      document.addEventListener('securitypolicyviolation', function() {
+        document.getElementById('result').textContent = 'CSP_ACTIVE';
+      });
+      var img = document.createElement('img');
+      img.src = 'https://external.invalid/x.png';
+      document.body.appendChild(img);
+    </script>
+  </body>
+</html>

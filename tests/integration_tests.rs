@@ -561,3 +561,57 @@ export const csp_script_loads = eventually(
     )
     .await;
 }
+
+#[tokio::test]
+async fn test_csp_document_directives_preserved() {
+    // The document CSP contains both a script hash and an img-src 'self'
+    // directive. Bombadil sanitises the CSP for documents: it strips the
+    // script hash (which would be invalidated by inline-script instrumentation)
+    // but preserves all other directives including img-src. This test verifies
+    // that img-src is enforced after instrumentation by confirming a
+    // securitypolicyviolation event fires when the page attempts to load a
+    // cross-origin image.
+    //
+    // Without the fix (CSP stripped entirely): no img-src restriction →
+    // cross-origin image is allowed → no violation event → #result stays
+    // "WAITING" → `eventually` expires at 10s → violation → FAIL.
+    //
+    // With the fix (CSP sanitised for documents): img-src 'self' is active →
+    // cross-origin image is blocked → securitypolicyviolation fires → #result
+    // becomes "CSP_ACTIVE" → spec satisfied → PASS.
+    let app = Router::new()
+        .fallback_service(ServeDir::new("./tests"))
+        .layer(middleware::from_fn(
+            |req: Request, next: middleware::Next| async move {
+                let mut response: Response = next.run(req).await;
+                response.headers_mut().insert(
+                    axum::http::header::HeaderName::from_static(
+                        "content-security-policy",
+                    ),
+                    HeaderValue::from_static(
+                        "script-src 'unsafe-inline' 'self' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='; img-src 'self'",
+                    ),
+                );
+                response
+            },
+        ));
+    run_browser_test_with_router(
+        "csp-document",
+        Expect::Success,
+        Duration::from_secs(20),
+        Some(
+            r#"
+import { extract, eventually } from "@antithesishq/bombadil";
+export { clicks } from "@antithesishq/bombadil/defaults";
+
+const resultText = extract((state) => state.document.body?.querySelector("\#result")?.textContent ?? null);
+
+export const csp_document_directives_preserved = eventually(
+  () => resultText.current === "CSP_ACTIVE"
+).within(10, "seconds");
+"#,
+        ),
+        app,
+    )
+    .await;
+}
