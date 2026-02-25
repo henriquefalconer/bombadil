@@ -457,3 +457,30 @@ export const counterStateMachine = always(unchanged.or(increment).or(decrement))
     )
     .await;
 }
+
+/// Verifies that `<script type="module" src="...">` loads correctly.
+///
+/// When Bombadil intercepts a response and calls `Fetch.fulfillRequest`, it must
+/// forward the original `Content-Type` header. Without it, Chrome rejects ES module
+/// scripts with a MIME type error, silently preventing the module from running.
+#[tokio::test]
+async fn test_external_module_script() {
+    run_browser_test(
+        "external-module-script",
+        Expect::Success,
+        Duration::from_secs(10),
+        Some(
+            r#"
+import { extract, eventually } from "@antithesishq/bombadil";
+export { scroll } from "@antithesishq/bombadil/defaults";
+
+const resultText = extract((state) => state.document.body?.querySelector("\#result")?.textContent ?? null);
+
+export const module_script_loads = eventually(
+  () => resultText.current === "LOADED"
+).within(10, "seconds");
+"#,
+        ),
+    )
+    .await;
+}

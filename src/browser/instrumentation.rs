@@ -160,11 +160,20 @@ pub async fn instrument_js_coverage(page: Arc<Page>) -> Result<()> {
                         .request_id(event.request_id.clone())
                         .body(BASE64_STANDARD.encode(body_instrumented))
                         .response_code(200)
-                        .response_header(fetch::HeaderEntry {
-                            name: "etag".to_string(),
-                            value: format!("{}", source_id.0),
-                        })
-                        // TODO: forward headers
+                        .response_headers(
+                            event
+                                .response_headers
+                                .iter()
+                                .flatten()
+                                .filter(|h| {
+                                    !h.name.eq_ignore_ascii_case("etag")
+                                })
+                                .cloned()
+                                .chain(std::iter::once(fetch::HeaderEntry {
+                                    name: "etag".to_string(),
+                                    value: format!("{}", source_id.0),
+                                })),
+                        )
                         .build()
                         .map_err(|error| {
                             anyhow!(
