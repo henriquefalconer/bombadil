@@ -28,6 +28,7 @@
 - Doc comments (`///`) go on public API surfaces, shared helpers, and constants whose purpose is not obvious from the name. Do not add doc comments to test functions, private one-off helpers, or self-explanatory code.
 - When a doc comment references a URL path, code path, or concrete value, verify it matches the actual implementation. Documentation that contradicts the code is worse than no documentation.
 - Private functions that are complex, security-sensitive, or called from both production and test code qualify for `///` doc comments. Simple private helpers that are only called from one site do not.
+- Keep doc comments proportional to the function's complexity. A one-line summary is sufficient for most functions. Multi-paragraph doc comments are warranted only for security-sensitive logic, complex algorithms, or public API entry points. Do not repeat information that is obvious from the function signature or parameter names.
 
 # Constants and Magic Values
 
@@ -57,6 +58,7 @@
 # Pattern Matching
 
 - When a code path branches on resource type, match each registered interception type explicitly. Use `_ =>` only when it represents a genuinely safe, conservative default (e.g., forward unchanged) and include a brief comment explaining why the default is safe. Do not use `_ =>` as a stand-in for "the one other type currently registered."
+- When a `match` arm is currently unreachable due to upstream filtering (e.g., only Script and Document are registered for Fetch interception), but serves as a safe default for future extensibility, add a comment noting which types currently reach the match and why the default is safe for any others.
 
 # Builder Patterns
 
@@ -74,7 +76,12 @@
 - Alias `serde_json` as `json` everywhere: `use serde_json as json;`.
 - Use `::` prefix to disambiguate crate names from local modules (e.g., `use ::url::Url;`).
 - Group imports by source: external crates first, then `crate::` local imports, separated by a blank line.
-- When grouping multiple items from a single crate inside `{}`, order them alphabetically by the full path of each item (e.g., `extract::Request` before `http::HeaderValue` before `middleware`).
+- When grouping multiple items from a single crate inside `{}`, order them alphabetically by the full path of each item (e.g., `extract::Request` before `http::HeaderValue` before `middleware` before `response::Response` before `Router`).
+
+# Logging
+
+- Use `log::info!` for high-level lifecycle events (test start, browser initiated, test complete). Use `log::debug!` for operational details (individual request interception, file writes, state transitions). Use `log::warn!` for recoverable errors (failed instrumentation, failed request continuation). Use `log::error!` only for unrecoverable failures.
+- Do not add log statements that serve only as CI cache-busters or change-detection markers. Every log call should have diagnostic value.
 
 # Dev-Dependencies
 

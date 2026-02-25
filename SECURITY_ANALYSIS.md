@@ -6,7 +6,7 @@ This document evaluates every identified problem and assumption in the code adde
 
 ## Problem 1: Denylist approach assumes completeness
 
-**Description**: `STRIPPED_RESPONSE_HEADERS` is a fixed list of 5 headers. Any header that should be stripped but is not listed will be forwarded with a stale value.
+**Description**: `STRIPPED_RESPONSE_HEADERS` is a fixed list of 5 headers. Any header that should be stripped but is not listed will be forwarded with a stale value after body instrumentation.
 
 **Origin**: Direct result of the new code — the original code had no denylist because it dropped everything.
 
@@ -16,42 +16,43 @@ This document evaluates every identified problem and assumption in the code adde
 
 ## Problem 2: content-type preservation is implicit
 
-**Description**: The `content-type` header — critical for ES module MIME type enforcement — is preserved only because it is absent from `STRIPPED_RESPONSE_HEADERS`. There is no explicit positive protection.
+**Description**: The `content-type` header — critical for ES module MIME type enforcement — is preserved only because it is absent from `STRIPPED_RESPONSE_HEADERS`. There is no explicit positive protection in the production code path.
 
 **Origin**: Direct result of the new code's denylist design.
 
 **Can it be disregarded?** No. This is the one problem that warrants ongoing attention.
 
-**Consequence analysis**: If a future maintainer adds `content-type` to `STRIPPED_RESPONSE_HEADERS` (e.g., to fix a perceived issue with stale MIME types), all `<script type="module">` tags loading external scripts would silently break — browsers require a JavaScript MIME type for module scripts and reject responses without one. The failure mode is a console error with no obvious connection to the header change. Existing unit tests (`build_headers_preserves_content_type`) and integration tests (`test_external_module_script`) would catch this regression, but only if they are run. A code-level comment on `STRIPPED_RESPONSE_HEADERS` explicitly noting that `content-type` must NOT be added would provide defense in depth.
+**Consequence analysis**: If a future maintainer adds `content-type` to `STRIPPED_RESPONSE_HEADERS` (e.g., to fix a perceived issue with stale MIME types after instrumentation), all `<script type="module">` tags loading external scripts would silently break — browsers require a JavaScript MIME type for module scripts and reject responses without one. The failure mode is a console error with no obvious connection to the header change.
 
 **Connected systems and variables**:
-- The browser enforces MIME type for `<script type="module">` (strict MIME type checking per HTML spec). Without `content-type: text/javascript`, modules fail with a MIME type error.
-- The denylist is the only mechanism protecting `content-type`. There is no allowlist, no assertion at the builder call site, and no runtime check.
-- The unit test `build_headers_preserves_content_type` is the sole regression guard. If someone deletes or skips tests, the protection vanishes.
-- Non-module scripts would still load (browsers are lenient about `content-type` for classic scripts), making the regression intermittent and hard to diagnose.
-- The `test_external_module_script` integration test would catch this, but only if tests are run.
+- The HTML specification mandates strict MIME type checking for module scripts. Without `content-type: text/javascript` (or equivalent), the browser rejects the response with a MIME type error. This is the exact bug that motivated the entire change.
+- Classic `<script>` tags are lenient about missing content-type, so a regression would only affect module scripts — making it intermittent and hard to diagnose across different applications.
+- The denylist is the sole mechanism protecting `content-type`. There is no allowlist, no assertion at the `FulfillRequestParams` builder call site, and no runtime check that content-type is present in the output.
+- The unit test `build_headers_preserves_content_type` is the primary regression guard. The integration test `test_external_module_script` is the secondary guard. If tests are skipped or deleted, the protection vanishes entirely.
+- CDP's `Fetch.fulfillRequest` uses replacement semantics: providing `responseHeaders` replaces the entire original header set. Omitting content-type is equivalent to actively removing it — there is no fallback to the original headers.
+- Any web framework that relies on content-type for CORS preflight, content negotiation, or security decisions (e.g., `X-Content-Type-Options: nosniff`) would be affected by its removal.
 
-**Mitigation assessment**: The unit test provides adequate protection for normal development. The risk is low but not zero. A `debug_assert!` or compile-time check would be stronger, but given Bombadil's testing-tool context and the existing test coverage, the current approach is acceptable.
+**Mitigation assessment**: The unit and integration tests provide adequate protection for normal development workflows. A code-level comment on `STRIPPED_RESPONSE_HEADERS` explicitly noting that `content-type` must NOT be added would provide defense in depth. The risk is low but not zero.
 
 ---
 
-## Problem 3: CSP sanitization does not handle multiple CSP headers as a merged policy
+## Problem 3: CSP sanitization does not merge multiple CSP headers
 
 **Description**: HTTP allows multiple `Content-Security-Policy` headers on a single response, and browsers intersect their policies. `sanitize_csp` processes a single header value. If the server sends two CSP headers, `build_response_headers` processes each independently via `flat_map`.
 
 **Origin**: Direct result of the new code.
 
-**Can it be disregarded?** Yes. The `flat_map` iteration over `response_headers` naturally handles multiple CSP headers independently. Browser intersection semantics mean that sanitizing each independently is correct — removing hashes from each header separately produces the same result as removing them from the intersection.
+**Can it be disregarded?** Yes. Processing each CSP header independently and then passing them all to the browser is correct because the browser will intersect them. Removing hashes from each header separately produces the same effective policy as removing them from a merged policy then splitting back. The intersection of (A minus hashes) and (B minus hashes) equals (A intersect B) minus hashes.
 
 ---
 
-## Problem 4: CSP sanitization is string-based, not fully spec-compliant
+## Problem 4: CSP sanitization is string-based, not formally parsed
 
-**Description**: The CSP parser splits on `;` and whitespace. It does not use a formal grammar parser.
+**Description**: The CSP parser splits on `;` and whitespace rather than using a formal grammar parser or CSP parsing library.
 
 **Origin**: Direct result of the new code.
 
-**Can it be disregarded?** Yes. CSP directive values are defined as space-separated tokens in the CSP spec (W3C CSP Level 3, Section 2.2). The semicolon-and-whitespace splitting approach matches the actual grammar. CSP values do not contain quoted strings or URL-encoding — they use single-quoted keywords (`'self'`, `'unsafe-inline'`, `'sha256-...'`). The approach is correct for the specification as written. A formal parser dependency would add complexity without practical benefit.
+**Can it be disregarded?** Yes. CSP directive values are defined as space-separated tokens (W3C CSP Level 3, Section 2.2). The semicolon-and-whitespace splitting exactly matches the actual grammar. CSP values do not contain quoted strings, URL-encoding, or escape sequences — they use single-quoted keywords (`'self'`, `'unsafe-inline'`, `'sha256-...'`). A formal parser dependency would add complexity without practical benefit.
 
 ---
 
@@ -61,77 +62,77 @@ This document evaluates every identified problem and assumption in the code adde
 
 **Origin**: Direct result of the new code.
 
-**Can it be disregarded?** Yes. `script-src-attr` governs inline event handler attributes (`onclick`, `onload`, etc.), not `<script>` element sources. Bombadil's instrumentation modifies script bodies, not event handler attributes. Hash values in `script-src-attr` remain valid after instrumentation, so forwarding them unchanged is correct behavior.
+**Can it be disregarded?** Yes. `script-src-attr` governs inline event handler attributes (`onclick`, `onload`, etc.), not `<script>` element sources or external script files. Bombadil's instrumentation modifies script bodies, not event handler attributes. Hash values in `script-src-attr` remain valid after instrumentation, so forwarding them unchanged is correct behavior.
 
 ---
 
 ## Problem 6: Stripping report-uri/report-to is aggressive
 
-**Description**: All `report-uri` and `report-to` directives are removed from sanitized CSP headers, even though only script-hash violations would be false positives.
+**Description**: All `report-uri` and `report-to` directives are removed from sanitized CSP headers, even though only script-hash violations would be instrumentation-induced false positives.
 
 **Origin**: Direct result of the new code.
 
-**Can it be disregarded?** Yes. During testing, instrumentation can trigger many kinds of mutations (DOM changes, network timing differences, different script execution order) that could cause CSP violations beyond just hash mismatches. Suppressing all CSP reporting during instrumentation prevents noise in the application's violation logs. The alternative (selectively suppressing only hash-related reports) is not possible because CSP reporting does not distinguish violation causes at the directive level.
+**Can it be disregarded?** Yes. During testing, instrumentation can trigger many kinds of mutations beyond hash mismatches (DOM changes, network timing differences, different script execution order, injected coverage code triggering CSP violations). Suppressing all CSP reporting during instrumentation prevents noise in the application's violation logs. The alternative (selectively suppressing only hash-related reports) is not possible because CSP reporting does not distinguish violation causes at the granularity needed.
 
 ---
 
-## Problem 7: No handling of Strict-Transport-Security (HSTS) interaction
+## Problem 7: No handling of HSTS interaction
 
-**Description**: HSTS headers are forwarded unchanged. If the test server runs on HTTP, the browser might cache an HSTS policy and refuse subsequent HTTP connections.
+**Description**: HSTS headers are forwarded unchanged. If the test server runs on HTTP, the browser might cache an HSTS policy and refuse subsequent HTTP connections to the same host.
 
 **Origin**: Not a direct result of the new code — the original code accidentally prevented this by dropping all headers.
 
-**Can it be disregarded?** Yes. Bombadil uses a fresh browser profile (via `user_data_directory` in `TempDir`) for each test run, so HSTS state does not persist across runs. Within a single run, HSTS would only apply if the test server used HTTPS, which the local axum test server does not. In production testing against real HTTPS origins, HSTS forwarding is correct behavior.
+**Can it be disregarded?** Yes. Bombadil creates a fresh browser profile (via `user_data_directory` in `TempDir`) for each test run, so HSTS state does not persist across runs. Within a single run, HSTS would only affect subsequent requests to the same host. In local testing (HTTP), servers don't send HSTS. In production testing (HTTPS), forwarding HSTS is correct. The new code is strictly more correct than the old code (which dropped HSTS along with everything else).
 
 ---
 
 ## Problem 8: Digest header stripping may not cover all variants
 
-**Description**: Only `digest` is stripped. RFC 9530 introduces `repr-digest` and `content-digest` as successors. These are not in the denylist.
+**Description**: Only `digest` (RFC 3230) is stripped. RFC 9530 introduces `repr-digest` and `content-digest` as successors. These are not in the denylist.
 
 **Origin**: Direct result of the new code.
 
-**Can it be disregarded?** Yes. RFC 9530 headers are extremely rare in practice (the RFC was published in 2024 and adoption is negligible). The `digest` header covers the legacy RFC 3230 case. If `repr-digest` or `content-digest` become common, adding them to the denylist is a one-line change. The failure mode (a service worker rejecting an instrumented script) would be immediately visible and easy to diagnose.
+**Can it be disregarded?** Yes. RFC 9530 headers are extremely rare in practice (the RFC was finalized in 2024 and adoption is negligible). The `digest` header covers the legacy case. If `repr-digest` or `content-digest` become common, adding them is a one-line change. The failure mode (a service worker validating the digest would reject the response) would be immediately visible and easy to diagnose.
 
 ---
 
 ## Problem 9: The denylist uses ASCII-only case matching
 
-**Description**: `STRIPPED_RESPONSE_HEADERS` entries are lowercase and compared with `eq_ignore_ascii_case`. HTTP headers are defined as ASCII tokens (RFC 9110, Section 5.1), so this is correct.
+**Description**: `STRIPPED_RESPONSE_HEADERS` entries are lowercase and compared with `eq_ignore_ascii_case`. If a server sends non-ASCII header names, they would not match.
 
 **Origin**: Direct result of the new code.
 
-**Can it be disregarded?** Yes. The HTTP specification requires header field names to be ASCII. `eq_ignore_ascii_case` is the correct comparison function. Non-ASCII header names would be a protocol violation by the server.
+**Can it be disregarded?** Yes. HTTP header field names are defined as ASCII tokens (RFC 9110, Section 5.1). Non-ASCII header names are a protocol violation by the server. `eq_ignore_ascii_case` is the correct comparison function per the HTTP specification.
 
 ---
 
 ## Problem 10: build_response_headers always appends etag even for documents
 
-**Description**: The synthetic `etag` (derived from `source_id`) is appended to every response, including documents. This could cause caching issues if a proxy uses the etag.
+**Description**: The synthetic `etag` (derived from `source_id`) is appended to every fulfilled response, including HTML documents. This could cause caching issues if a proxy uses the etag for conditional requests.
 
-**Origin**: Partially from the original code (which also set etag) and partially from the new code (which extends it to all resource types).
+**Origin**: Partially from the original code (which also set a synthetic etag on every response) and partially from the new code (which preserves this behavior).
 
-**Can it be disregarded?** Yes. The original code already set a synthetic etag on every fulfilled response. The etag is needed for instrumentation source ID tracking. Caching proxies between CDP and the page are not a realistic scenario — CDP operates at the browser level.
-
----
-
-## Problem 11: resource_type clone may be unnecessary
-
-**Description**: `event.resource_type.clone()` is called before `build_response_headers`. The comment says "before the iterator borrows event" but `resource_type` is a small enum.
-
-**Origin**: Direct result of the new code.
-
-**Can it be disregarded?** Yes. `network::ResourceType` is a small enum. The clone is at worst a no-op copy. This is a code style issue, not a security or correctness issue. The Rust compiler would reject the code if the borrow were actually invalid.
+**Can it be disregarded?** Yes. The original code already set a synthetic etag on every fulfilled response. The etag is used for instrumentation source ID tracking. Caching proxies between CDP and the page are not a realistic scenario — CDP operates within the browser process, not over a network link.
 
 ---
 
-## Problem 12: CSP sanitization strips strict-dynamic even when other trust anchors remain
+## Problem 11: resource_type clone before builder
 
-**Description**: `'strict-dynamic'` is removed whenever hashes/nonces are stripped. But if the directive also contains `'unsafe-inline'` or host sources, `'strict-dynamic'` would override them in a real browser and its removal changes the effective policy.
+**Description**: `event.resource_type.clone()` is called before the builder to avoid a borrow conflict. The comment says "before the iterator borrows event" but `resource_type` is a small Copy-like enum.
 
 **Origin**: Direct result of the new code.
 
-**Can it be disregarded?** Yes, for the instrumentation use case. When Bombadil removes script hashes (because instrumentation invalidates them), `'strict-dynamic'` without a trust anchor (hash or nonce) would block all dynamically inserted scripts. Removing it allows `'unsafe-inline'` or host sources to take effect, which is more permissive than the original policy — but the alternative is all scripts being blocked, making testing impossible. The goal of CSP sanitization is to allow instrumented scripts to run while preserving as much of the original policy as possible.
+**Can it be disregarded?** Yes. `network::ResourceType` is a small enum. Cloning it is at worst a trivial copy. The clone exists because the Rust borrow checker requires it when `event.response_headers` is also borrowed in the same expression. This is a Rust-specific ergonomic concern, not a correctness or security issue.
+
+---
+
+## Problem 12: strict-dynamic removal widens the effective CSP
+
+**Description**: When hashes/nonces are stripped from a directive, `'strict-dynamic'` is also removed. In the presence of `'strict-dynamic'`, `'unsafe-inline'` and host-based sources are normally ignored by the browser. Removing `'strict-dynamic'` makes them active again, widening the effective policy.
+
+**Origin**: Direct result of the new code.
+
+**Can it be disregarded?** Yes, for the instrumentation use case. When Bombadil removes script hashes (because instrumentation invalidates them), `'strict-dynamic'` without a trust anchor (hash or nonce) would block all dynamically inserted scripts — making testing impossible. Removing it allows `'unsafe-inline'` or host sources to take effect, which is more permissive than the original policy. But the alternative is all scripts being blocked. The goal of CSP sanitization is to allow instrumented scripts to run while preserving as much of the original policy as practical.
 
 ---
 
@@ -141,37 +142,37 @@ This document evaluates every identified problem and assumption in the code adde
 
 **Origin**: Direct result of the new code.
 
-**Can it be disregarded?** Yes. If a page uses `sandbox` without `allow-scripts`, scripts cannot run regardless of `script-src`. Modifying `sandbox` would fundamentally change the page's security boundary, which is beyond the scope of script instrumentation. The correct behavior is to forward it unchanged.
+**Can it be disregarded?** Yes. If a page uses `sandbox` without `allow-scripts`, scripts cannot run regardless of `script-src`. Modifying `sandbox` would fundamentally change the page's security boundary, which is beyond the scope of script instrumentation. Forwarding it unchanged is the correct, conservative behavior.
 
 ---
 
-## Problem 14: Compression layer test only covers gzip
+## Problem 14: Compression test only covers gzip
 
 **Description**: The `test_compressed_script` integration test uses `CompressionLayer::new()` which defaults to gzip. Brotli and zstd are not tested.
 
 **Origin**: Direct result of the new code.
 
-**Can it be disregarded?** Yes. The `content-encoding` header is stripped regardless of the compression algorithm. CDP decompresses the body before handing it to the interception handler regardless of algorithm. The specific algorithm is irrelevant to the logic being tested.
+**Can it be disregarded?** Yes. The logic being tested is `content-encoding` header stripping, which is independent of the specific compression algorithm. CDP decompresses the response body before handing it to the Fetch interception handler regardless of the algorithm used. The specific algorithm is irrelevant to correctness.
 
 ---
 
-## Problem 15: test_csp_script uses a hardcoded hash that doesn't match the script
+## Problem 15: test_csp_script uses a hardcoded hash that doesn't match the actual script
 
-**Description**: The CSP header uses a sha256 hash that may not match `shared/script.js`. This is intentional — the test verifies that Bombadil strips the hash, allowing the script to load despite the mismatch.
+**Description**: The CSP header in `test_csp_script` uses a sha256 hash (`sRoPO3cq...`) that does not match the actual content of `shared/script.js`.
 
 **Origin**: Direct result of the new code.
 
-**Can it be disregarded?** Yes. Using a non-matching hash makes the test meaningful: if Bombadil fails to strip the CSP, the browser blocks the script and the test fails.
+**Can it be disregarded?** Yes, this is intentional. Using a non-matching hash makes the test meaningful: without Bombadil's CSP stripping, the browser would block the script (hash mismatch) and the test would fail. The test verifies that Bombadil correctly strips the hash, allowing the script to load despite the CSP mismatch.
 
 ---
 
 ## Problem 16: make_csp_router requires 'static lifetime for CSP string
 
-**Description**: `make_csp_router` takes `csp: &'static str`, which is restrictive.
+**Description**: `make_csp_router` takes `csp: &'static str`, which prevents runtime-generated CSP values.
 
 **Origin**: Direct result of the new code.
 
-**Can it be disregarded?** Yes. This is test-only code. All callers use string literals. The `'static` requirement is a natural consequence of the axum middleware closure.
+**Can it be disregarded?** Yes. This is test-only code. All callers use string literals, which are inherently `'static`. The `'static` requirement is a natural consequence of the axum middleware closure capturing the reference across an async boundary.
 
 ---
 
@@ -181,7 +182,17 @@ This document evaluates every identified problem and assumption in the code adde
 
 **Origin**: Direct result of the new code.
 
-**Can it be disregarded?** Yes. These are dev-dependencies only — they do not affect the production binary. The crates are well-maintained (tower-http ecosystem).
+**Can it be disregarded?** Yes. These are dev-dependencies only — they do not affect the production binary size, attack surface, or runtime behavior. The crates are well-maintained parts of the tower-http ecosystem.
+
+---
+
+## Problem 18: The `_` wildcard in CSP resource-type match is currently unreachable
+
+**Description**: In `build_response_headers`, the CSP match has `Script`, `Document`, and `_ => Some(h.clone())`. But the Fetch interception only registers for Script and Document resource types, so the `_` arm is effectively dead code.
+
+**Origin**: Direct result of the new code.
+
+**Can it be disregarded?** Yes. The `_` arm acts as a safe default: if someone later adds more resource types to the Fetch interception, CSP would pass through unchanged for those types. Since instrumentation only modifies Script and Document bodies, forwarding CSP unchanged for other types is the correct conservative behavior. However, the arm lacks a comment explaining why the default is safe, which is a deviation from the project's pattern matching conventions.
 
 ---
 
@@ -206,5 +217,6 @@ This document evaluates every identified problem and assumption in the code adde
 | 15 | Hardcoded CSP hash | New code | Yes | None |
 | 16 | 'static lifetime | New code | Yes | None |
 | 17 | New dev-dependencies | New code | Yes | None |
+| 18 | Unreachable `_` arm | New code | Yes | Low |
 
-**One non-disregardable problem identified (Problem 2).** It is adequately mitigated by existing unit and integration tests, but the implicit nature of the protection warrants awareness during future maintenance.
+**One non-disregardable problem identified (Problem 2).** It is adequately mitigated by existing unit and integration tests, but the implicit nature of the protection warrants awareness during future maintenance. A code-level comment explicitly noting that `content-type` must not be added to the denylist would strengthen the defense.
