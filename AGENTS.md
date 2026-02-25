@@ -81,13 +81,3 @@ Heavy use of Tokio: async/await, broadcast channels for events, oneshot for sync
 ## Testing
 
 Integration tests are in `tests/`. Each test scenario has an HTML fixture directory (e.g., `tests/links/`, `tests/console-error/`). Tests spawn local web servers (axum) and run Bombadil against them. Snapshot tests use `insta`. Property tests use `proptest`.
-
-## Sandboxed Build Environment
-
-When building outside Nix (e.g., in CI without Nix), set:
-- `CARGO_TARGET_DIR=/tmp/bombadil-target` (virtiofs build output causes SIGBUS)
-- `RUST_MIN_STACK=67108864` (prevent stack overflow)
-
-Create `.cargo/config.toml` with `[target.aarch64-unknown-linux-gnu]` section: `linker = "clang"` and `rustflags = ["-C", "link-arg=-fuse-ld=lld"]`.
-
-Install `esbuild` globally: `npm install -g esbuild`. Expect Chromium at `/usr/bin/chromium-browser` (symlink Playwright's binary there if needed).
