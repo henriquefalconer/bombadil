@@ -3,7 +3,7 @@ use axum::Router;
 use std::{fmt::Display, path::PathBuf, sync::Once, time::Duration};
 use tempfile::TempDir;
 use tokio::sync::Semaphore;
-use tower_http::services::ServeDir;
+use tower_http::{compression::CompressionLayer, services::ServeDir};
 use url::Url;
 
 use bombadil::{
@@ -52,7 +52,7 @@ fn setup() {
 static TEST_SEMAPHORE: Semaphore = Semaphore::const_new(2);
 const TEST_TIMEOUT_SECONDS: u64 = 120;
 
-/// Run a named browser test with a given expectation.
+/// Run a named browser test with a given expectation and a custom router.
 ///
 /// Spins up two web servers: one on a random port P, and one on port P + 1, in order to
 /// facitiliate multi-domain tests.
@@ -62,16 +62,16 @@ const TEST_TIMEOUT_SECONDS: u64 = 120;
 ///     http://localhost:{P}/tests/{name}.
 ///
 /// Which means that every named test case directory should have an index.html file.
-async fn run_browser_test(
+async fn run_browser_test_with_router(
     name: &str,
     expect: Expect,
     timeout: Duration,
     spec: Option<&str>,
+    app: Router,
 ) {
     setup();
     let _permit = TEST_SEMAPHORE.acquire().await.unwrap();
     log::info!("starting browser test");
-    let app = Router::new().fallback_service(ServeDir::new("./tests"));
     let app_other = app.clone();
 
     let (listener, listener_other, port) = loop {
@@ -204,6 +204,16 @@ async fn run_browser_test(
             panic!("{} but got {}", expect, outcome);
         }
     }
+}
+
+async fn run_browser_test(
+    name: &str,
+    expect: Expect,
+    timeout: Duration,
+    spec: Option<&str>,
+) {
+    let app = Router::new().fallback_service(ServeDir::new("./tests"));
+    run_browser_test_with_router(name, expect, timeout, spec, app).await;
 }
 
 #[tokio::test]
@@ -481,6 +491,40 @@ export const module_script_loads = eventually(
 ).within(10, "seconds");
 "#,
         ),
+    )
+    .await;
+}
+
+/// Verifies that scripts served with `Content-Encoding: gzip` load correctly after
+/// Bombadil intercepts and instruments them.
+///
+/// When Bombadil intercepts a gzip-compressed response, CDP's `GetResponseBody` returns
+/// the already-decoded body. If Bombadil then forwards the original `Content-Encoding:
+/// gzip` header, Chrome treats the plaintext as gzip-compressed data and fails to parse
+/// the script. The fix strips stale transport headers (`Content-Encoding`,
+/// `Content-Length`, `Transfer-Encoding`) before calling `Fetch.fulfillRequest`.
+#[tokio::test]
+async fn test_compressed_script() {
+    let app = Router::new()
+        .fallback_service(ServeDir::new("./tests"))
+        .layer(CompressionLayer::new());
+    run_browser_test_with_router(
+        "compressed-script",
+        Expect::Success,
+        Duration::from_secs(10),
+        Some(
+            r#"
+import { extract, eventually } from "@antithesishq/bombadil";
+export { scroll } from "@antithesishq/bombadil/defaults";
+
+const resultText = extract((state) => state.document.body?.querySelector("\#result")?.textContent ?? null);
+
+export const compressed_script_loads = eventually(
+  () => resultText.current === "LOADED"
+).within(10, "seconds");
+"#,
+        ),
+        app,
     )
     .await;
 }

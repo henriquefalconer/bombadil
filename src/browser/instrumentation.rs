@@ -166,7 +166,18 @@ pub async fn instrument_js_coverage(page: Arc<Page>) -> Result<()> {
                                 .iter()
                                 .flatten()
                                 .filter(|h| {
-                                    !h.name.eq_ignore_ascii_case("etag")
+                                    ![
+                                        "etag",
+                                        "content-length",
+                                        "content-encoding",
+                                        "transfer-encoding",
+                                    ]
+                                    .iter()
+                                    .any(
+                                        |name| {
+                                            h.name.eq_ignore_ascii_case(name)
+                                        },
+                                    )
                                 })
                                 .cloned()
                                 .chain(std::iter::once(fetch::HeaderEntry {

@@ -50,4 +50,4 @@ indoc = "2.0.7"
 insta = "1.43.1"
 proptest = "1.10.0"
 tower = "0.5.2"
-tower-http = { version = "0.6.8", features = ["fs"] }
+tower-http = { version = "0.6.8", features = ["fs", "compression-gzip"] }
