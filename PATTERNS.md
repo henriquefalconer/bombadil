@@ -7,7 +7,7 @@
 - When refactoring a shared helper into a wrapper and a lower-level implementation, the wrapper (the function most tests call) retains the full doc comment. The lower-level function gets a brief one-liner referencing the wrapper.
 - If you modify any part of a doc comment, verify the entire comment for factual correctness. Fixing a typo while leaving a wrong URL or outdated description signals carelessness.
 - Test fixture directories use kebab-case names that match the test function name after dropping the `test_` prefix and converting underscores to hyphens (e.g., `test_external_module_script` -> `external-module-script/`). Each directory must contain an `index.html` file.
-- Test HTML fixtures should follow the structure used by existing fixtures in the `tests/` directory: include `<html>`, `<head>`, and `<title>` elements. Omit `<!DOCTYPE html>`, `<meta>`, viewport tags, and styling unless the test specifically exercises them. The `<title>` should be a human-readable name for the test case.
+- Test HTML fixtures should follow the structure used by existing fixtures in the `tests/` directory: include `<html>`, `<head>`, and `<title>` elements. Omit `<!DOCTYPE html>`, `<meta>`, viewport tags, `lang` attributes, and styling unless the test specifically exercises them. The `<title>` should be a human-readable name for the test case. Self-closing tags (e.g., `<input />`) should not be used — follow the existing fixtures' HTML style.
 - All HTML fixtures for the same logical test pattern (e.g., "script loads and sets text content") should use identical structure. Do not vary whitespace, indentation style, or casing of HTML tags between fixtures that serve the same purpose.
 - When multiple test fixtures contain identical files (e.g., the same `script.js`), place the shared file in the `tests/shared/` directory and reference it via an absolute path in the HTML (e.g., `/shared/script.js`). Do not duplicate files across fixture directories.
 - When multiple tests share the same setup logic (e.g., building a router with specific middleware), extract that logic into a named helper function rather than duplicating the closure or builder inline.
@@ -22,6 +22,7 @@
 - Define test helper functions (constructors, factory functions) inside the `mod tests` block, not outside it. Test helpers are private to the test module.
 - Do not use section-separator comments (`// Item 1: ...`, `// --- ...`) inside unit test modules to organize tests by topic. Test ordering and `#[test]` names are sufficient grouping. If a module has so many tests that it needs internal headers, consider splitting into submodules.
 - When a unit test module grows beyond a handful of tests, group related tests by naming convention (e.g., `sanitize_csp_*`, `build_headers_*`) rather than by structural dividers.
+- Name unit test functions with a descriptive prefix that groups related tests (e.g., `backspace_has_no_text`, `enter_has_text`). Do not add a redundant `test_` prefix — the `#[test]` attribute already marks functions as tests, and `cargo test` output includes the module path for disambiguation.
 
 # Doc Comments
 
