@@ -111,8 +111,9 @@ impl BrowserAction {
                 }
             }
             BrowserAction::PressKey { code } => {
-                let info = key_info(*code)
-                    .ok_or_else(|| anyhow!("unknown key with code: {:?}", code))?;
+                let info = key_info(*code).ok_or_else(|| {
+                    anyhow!("unknown key with code: {:?}", code)
+                })?;
                 let build_params = |event_type| {
                     let mut builder = input::DispatchKeyEventParams::builder()
                         .r#type(event_type)
@@ -121,9 +122,8 @@ impl BrowserAction {
                         .code(info.name)
                         .key(info.name);
                     if !info.text.is_empty() {
-                        builder = builder
-                            .unmodified_text(info.text)
-                            .text(info.text);
+                        builder =
+                            builder.unmodified_text(info.text).text(info.text);
                     }
                     builder.build().map_err(|err| anyhow!(err))
                 };
@@ -132,9 +132,9 @@ impl BrowserAction {
                 )?)
                 .await?;
                 if !info.text.is_empty() {
-                    page.execute(
-                        build_params(input::DispatchKeyEventType::Char)?,
-                    )
+                    page.execute(build_params(
+                        input::DispatchKeyEventType::Char,
+                    )?)
                     .await?;
                 }
                 page.execute(build_params(input::DispatchKeyEventType::KeyUp)?)

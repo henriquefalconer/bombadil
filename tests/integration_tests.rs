@@ -572,6 +572,37 @@ export const csp_script_loads_and_csp_enforced = eventually(
 }
 
 #[tokio::test]
+async fn test_key_press_tab_moves_focus() {
+    // Verifies Tab sends RawKeyDown+KeyUp only (no Char/insertText), so the
+    // browser's command pipeline moves focus rather than inserting a literal \t.
+    //
+    // Before fix: Tab had text="\t" → Char event → insertText("\t") → literal
+    // tab inserted in first input, focus never moves → eventually times out.
+    //
+    // After fix: Tab has text="" → no Char event → RawKeyDown triggers native
+    // Tab-focus-navigation → second input receives focus → eventually passes.
+    run_browser_test(
+        "key-press",
+        Expect::Success,
+        Duration::from_secs(TEST_TIMEOUT_SECONDS),
+        Some(
+            r#"
+import { actions, extract, eventually, from } from "@antithesishq/bombadil";
+
+export const tabKey = actions(() => [{ PressKey: { code: 9 } }]);
+
+const focusedId = extract((state) => state.document.activeElement?.id ?? null);
+
+export const tab_moves_focus_to_second_input = eventually(
+  () => focusedId.current === "second"
+).within(10, "seconds");
+"#,
+        ),
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn test_csp_document_directives_preserved() {
     // Verifies Bombadil sanitises document CSP (strips script hashes, preserves other directives like img-src).
     let app = make_csp_router(
