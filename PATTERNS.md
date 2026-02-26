@@ -38,8 +38,9 @@
 
 # Cross-Boundary Contracts
 
-- When the same set of values must exist in both TypeScript and Rust (e.g., key codes in `keycodes()` and `key_info()`, action variant names in `Action` and `JsAction`), keep the two definitions adjacent in intent and verify they match after every change. A mismatch produces runtime errors that are not caught at compile time.
+- When the same set of values must exist in both TypeScript and Rust (e.g., key codes in `keycodes()` and `key_info()`, action variant names in `Action` and `JsAction`), keep the two definitions adjacent in intent and back the correspondence with an automated check (a test or build-time generation). Manual "keep in sync" comments are necessary but not sufficient — a mismatch produces silent runtime failures that no compile-time check catches.
 - When a protocol or API defines distinct concepts for the same domain (e.g., CDP's `code` vs `key` for keyboard events), the Rust data model should preserve the distinction even if current values happen to be identical. Use separate struct fields rather than reusing one field for both, so that future additions cannot silently conflate them.
+- When a lookup table has entries where two conceptually distinct fields are always identical (e.g., `code` and `key` for the current set of special keys), add a comment at the table site noting that this identity is coincidental and will not hold for other key categories (printable characters, modifiers, numpad). Without this warning, the uniform pattern becomes a template that future contributors copy without questioning.
 - When simulating browser input via CDP, match the event sequence and field values used by reference implementations (e.g., Puppeteer's `USKeyboardLayout`). Deviations from reference behavior should be documented with the reason for divergence.
 
 # Header Handling

@@ -2,83 +2,81 @@
 
 ## Fundamental Problems and Risky Assumptions
 
-### Problem 1: `code` and `key` fields use the same value for all keys
+### Problem 1: `code` and `key` CDP fields always hold the same value
 
 **Severity: Medium**
 
-The CDP `DispatchKeyEventParams` has two distinct fields: `code` (the physical key identifier, e.g., `"Tab"`) and `key` (the logical key value, e.g., `"Tab"`). In the current implementation, both are set to `info.name`. For the eight keys currently supported, `code` and `key` happen to be identical, but this is not universally true (e.g., `code: "Digit1"` vs `key: "1"`, or `code: "ShiftLeft"` vs `key: "Shift"`). If the key map is extended to include printable characters, modifier keys, or numpad keys, using the same value for both fields will produce incorrect key events.
+The CDP `DispatchKeyEventParams` has two distinct fields: `code` (the physical key identifier, e.g., `"Digit1"`) and `key` (the logical key value, e.g., `"1"`). The `KeyInfo` struct correctly declares separate `code` and `key` fields, but every entry in `key_info()` sets them to the same string. For the eight currently supported keys (Backspace, Tab, Enter, Escape, four arrows), `code` and `key` happen to be identical per the CDP specification, so this is correct today.
 
-**Considered for disregard:** This is a direct result of the feat/keys code. It cannot be disregarded because the `key_info` function is the natural place to add new keys, and whoever adds them may follow the existing pattern of a single `name` field without realizing it conflates two distinct CDP concepts.
+**Why this cannot be disregarded:** The `key_info()` function is the natural place to add new keys, and the pattern of identical `code`/`key` values across all eight entries creates a strong template effect. A future contributor adding a printable character key (e.g., code 49 → `code: "Digit1"`, `key: "1"`) or a modifier key (e.g., code 16 → `code: "ShiftLeft"`, `key: "Shift"`) may follow the existing pattern and set both fields to the same value, producing incorrect key events that pass the existing unit tests (which only check that `code` and `key` are both set to the expected name).
 
-**Consequences:** Web applications that read `event.code` vs `event.key` in their keyboard handlers would receive incorrect values. This is particularly relevant for: (a) games and accessibility tools that distinguish physical key position from logical value, (b) keyboard shortcut detection that checks `event.code` for layout-independent bindings, (c) any extension of the key map to printable characters or modifier keys, where `code` and `key` diverge.
+**Consequences:**
+- Web applications that read `event.code` for layout-independent shortcuts would receive wrong values (e.g., `"1"` instead of `"Digit1"`).
+- Web applications that display `event.key` to users would show physical key identifiers instead of logical values.
+- Games, accessibility tools, and internationalized applications that distinguish physical from logical keys would be incorrectly fuzzed.
+- The existing unit tests would not catch the error because they verify `code` and `key` independently but do not test that they differ when they should.
 
 ---
 
-### Problem 2: `keycodes()` and `key_info()` can become inconsistent
+### Problem 2: Dual-source key code lists with no automated synchronization
 
 **Severity: Medium**
 
-The set of valid key codes exists in two places: the Rust `key_info()` match arms and the TypeScript `keycodes()` array. There is no compile-time or test-time check that these two lists are synchronized. If a code is added to `keycodes()` but not to `key_info()`, the fuzzer will generate `PressKey` actions that fail at runtime with "unknown key with code." If a code is added to `key_info()` but not to `keycodes()`, the fuzzer will never exercise that key.
+The set of valid key codes exists in two places with no compile-time or test-time cross-validation:
+- Rust: `SUPPORTED_KEY_CODES` const and `key_info()` match arms in `src/browser/keys.rs`
+- TypeScript: `keycodes()` array in `src/specification/random.ts`
 
-**Considered for disregard:** This is a direct result of the feat/keys code — the problem existed with the original two keys but was less consequential because the list was small and obvious. With eight keys and an expanding pattern, the risk of drift increases. This is not disregardable because runtime failures during fuzzing are silent from the user's perspective — the runner retries a different action and the missed coverage goes unnoticed.
+The `SUPPORTED_KEY_CODES` constant and its doc comment reference the TypeScript function, and there is a unit test ensuring `SUPPORTED_KEY_CODES` matches `key_info()`. But there is no test verifying the TypeScript list matches the Rust list.
 
-**Consequences:** (a) Runtime errors in the runner loop when an unsupported code reaches `key_info()` — the action fails and the runner picks another, silently reducing key-press coverage. (b) Asymmetric key coverage — some keys never get tested despite being supported. (c) Future contributors adding keys in one place but not the other, since there is no shared source of truth or cross-language validation.
+**Why this cannot be disregarded:** The problem existed with the original two keys on develop but was lower-risk because the list was small and Backspace/Tab were already in the TS list without Rust support (silently producing errors). With eight keys and an established pattern of expansion, drift becomes more likely. Runtime failures during fuzzing are silent — the runner swallows action errors and retries with a different action, so missed coverage goes unnoticed.
 
----
-
-### Problem 3: Empty string as sentinel for "no text"
-
-**Severity: Low**
-
-The `KeyInfo.text` field uses `""` (empty string) to mean "this key does not produce character input." The dispatch logic in `actions.rs` checks `!info.text.is_empty()` to decide whether to include text fields and whether to send the `Char` event. This works correctly for all currently supported keys, but empty string as a sentinel is fragile: it conflates "no text" with "text that happens to be empty" and relies on every future contributor understanding this convention.
-
-**Considered for disregard:** This follows a pragmatic pattern that is common in Rust (using `""` or empty vec as "none" for non-optional data). The struct is small, internal, and only consumed in one place. The alternative (using `Option<&'static str>`) would be more explicit but adds syntactic overhead for a purely internal type. **This can be disregarded** — the current approach is acceptable for the scope and visibility of the type, and the conditional checks in `actions.rs` make the intent clear.
+**Consequences:**
+- If a code is added to `keycodes()` but not to `key_info()`: the fuzzer generates `PressKey` actions that fail at runtime with "unknown key with code." The runner retries, wasting cycles and silently reducing key-press coverage.
+- If a code is added to `key_info()` but not to `keycodes()`: the default action set never exercises that key. The key is supported but unreachable from the standard fuzzing configuration.
+- Both failure modes are invisible to the user. There is no log message, no metric, and no test that would surface the inconsistency.
 
 ---
 
-### Problem 4: Hardcoded `\r` for Enter key text value
+### Problem 3: Pre-existing mismatch between develop's `keycodes()` and `key_name()` (now fixed)
 
-**Severity: Low**
+**Severity: Low (resolved by feat/keys)**
 
-Enter's text is hardcoded as `"\r"` (carriage return). In the previous code on develop, `"\r"` was unconditionally set for all keys — a clear bug that the feat/keys branch fixes. However, the choice of `"\r"` specifically (vs `"\n"` or `"\r\n"`) is a CDP convention detail. Chromium's own key event dispatch uses `"\r"` for Enter, so this is correct, but it is an undocumented assumption.
+On develop, the TypeScript `keycodes()` function returned `[8, 9, 13, 27]` (Backspace, Tab, Enter, Escape), but the Rust `key_name()` function only recognized codes 13 (Enter) and 27 (Escape). Codes 8 and 9 would produce "unknown key" errors at runtime — exactly the drift described in Problem 2.
 
-**Considered for disregard:** This matches Chromium's actual behavior (verified by the CDP protocol documentation and Puppeteer's source). The value was already present on develop and is not new to feat/keys. **This can be disregarded** — it is correct and matches the upstream protocol.
-
----
-
-### Problem 5: No modifier key support (Shift, Ctrl, Alt, Meta)
-
-**Severity: Low**
-
-The `DispatchKeyEventParams` builder supports `modifiers` (a bitmask for Shift, Ctrl, Alt, Meta) but the `PressKey` action and `KeyInfo` struct have no mechanism to express or send modifier state. All key presses are dispatched as unmodified. This means: (a) Shift+Tab (reverse tab navigation) cannot be tested, (b) Ctrl+A, Ctrl+C, and other keyboard shortcuts cannot be fuzzed, (c) Alt+arrow and other accessibility shortcuts are unreachable.
-
-**Considered for disregard:** Modifier support was not present on develop either, and feat/keys does not claim to add it. This is a feature gap, not a regression. **This can be disregarded** as a known limitation rather than a problem introduced by the branch.
+**This is resolved by feat/keys**, which adds Rust-side support for all codes in the TypeScript list and extends both lists with arrow keys. However, the resolution was manual — the same drift can recur because the underlying lack of automated cross-validation (Problem 2) is not addressed.
 
 ---
 
-### Problem 6: No `location` field in key dispatch
+### Problem 4: Integration test does not export `clicks` as a baseline action
 
 **Severity: Low**
 
-The CDP `DispatchKeyEventParams` supports a `location` field that distinguishes between left and right variants of modifier keys (Left Shift vs Right Shift) and numpad keys vs main keys. The current implementation does not set this field. For the eight keys currently supported, this is harmless — none have left/right variants and none are numpad duplicates.
+The `test_key_press_tab_moves_focus` test exports only `tabKey` as its action. The existing test pattern (documented in PATTERNS.md) specifies: "When a test provides a custom spec and needs interaction to keep the runner loop cycling, export `clicks` as the baseline action. Only export a different action set when the test specifically exercises that action type."
 
-**Considered for disregard:** None of the currently supported keys are affected. This only becomes relevant if the key map expands to include modifier keys or numpad keys. **This can be disregarded** for the current scope.
+The test specifically exercises Tab key behavior, so not exporting `clicks` is intentionally correct — the test needs only Tab presses to verify focus movement. However, by not including a baseline action, the test relies on Tab being the only available action, which means the runner has no fallback if the Tab action fails or if the page state makes Tab a no-op.
+
+**This can be considered acceptable** because the test is specifically designed to verify Tab behavior in isolation, and including `clicks` would introduce non-deterministic clicking that could interfere with the focus-movement property being tested.
 
 ---
 
-### Problem 7: `u8` key code type limits the addressable key space
+## Disregarded Items
 
-**Severity: Low**
+The following items were evaluated and determined to not require action:
 
-The `PressKey` variant uses `code: u8`, limiting key codes to 0–255. Standard virtual key codes (Windows VK_ codes, which the CDP `windowsVirtualKeyCode` field references) fit within 0–254 for all common keys, so this is sufficient for the current and foreseeable key set. However, some extended keys and OEM keys can theoretically exceed 255.
-
-**Considered for disregard:** This is not introduced by feat/keys — the `u8` type was already the type on develop. All commonly used virtual key codes fit in a `u8`. **This can be disregarded**.
+| Item | Reason for Disregard |
+|------|---------------------|
+| Empty string sentinel for no-text keys (`""`) | Pragmatic pattern, internal-only, consumed in one place with clear conditional checks. `Option<&'static str>` would be more explicit but adds overhead for a private type. |
+| `\r` for Enter text value | Matches Chromium CDP convention. Already present on develop. Verified against Puppeteer's `USKeyboardLayout`. |
+| No modifier key support (Shift, Ctrl, Alt, Meta) | Feature gap, not a regression. develop had no modifier support either. |
+| No `location` field in key dispatch | Irrelevant for the current key set (no left/right modifier variants, no numpad keys). |
+| `u8` key code type range (0–255) | Pre-existing type choice on develop. All standard virtual key codes fit in `u8`. |
+| `div#result` in test fixture is unused | Harmless placeholder element. Does not affect test behavior. |
 
 ---
 
 ## Summary of Non-Disregardable Problems
 
-| # | Problem | Severity | Risk |
-|---|---------|----------|------|
-| 1 | `code` and `key` fields conflated into single `name` | Medium | Incorrect key events when map is extended to keys where code != key |
-| 2 | Dual-source key code lists with no synchronization | Medium | Silent runtime failures or missed coverage during fuzzing |
+| # | Problem | Severity | Core Risk |
+|---|---------|----------|-----------|
+| 1 | `code` and `key` fields always identical | Medium | Template effect leads to incorrect key events when map is extended to keys where code ≠ key |
+| 2 | Dual-source key code lists with no automated sync | Medium | Silent runtime failures or missed fuzzing coverage from list drift |
