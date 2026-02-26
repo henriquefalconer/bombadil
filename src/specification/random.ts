@@ -120,5 +120,5 @@ export function integers(): IntegerGenerator {
 }
 
 export function keycodes(): Generator<number> {
-  return from([8, 9, 13, 27]);
+  return from([8, 9, 13, 27, 37, 38, 39, 40]);
 }

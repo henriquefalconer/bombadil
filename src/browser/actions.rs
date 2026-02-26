@@ -6,7 +6,7 @@ use chromiumoxide::cdp::browser_protocol::{input, page};
 use serde::Serialize;
 use tokio::time::sleep;
 
-use crate::browser::keys::key_name;
+use crate::browser::keys::key_info;
 use crate::geometry::Point;
 
 #[derive(Clone, Debug, Serialize)]
@@ -111,28 +111,32 @@ impl BrowserAction {
                 }
             }
             BrowserAction::PressKey { code } => {
+                let info = key_info(*code)
+                    .ok_or_else(|| anyhow!("unknown key with code: {:?}", code))?;
                 let build_params = |event_type| {
-                    if let Some(name) = key_name(*code) {
-                        input::DispatchKeyEventParams::builder()
-                            .r#type(event_type)
-                            .native_virtual_key_code(*code as i64)
-                            .windows_virtual_key_code(*code as i64)
-                            .code(name)
-                            .key(name)
-                            .unmodified_text("\r")
-                            .text("\r")
-                            .build()
-                            .map_err(|err| anyhow!(err))
-                    } else {
-                        bail!("unknown key with code: {:?}", code)
+                    let mut builder = input::DispatchKeyEventParams::builder()
+                        .r#type(event_type)
+                        .native_virtual_key_code(*code as i64)
+                        .windows_virtual_key_code(*code as i64)
+                        .code(info.name)
+                        .key(info.name);
+                    if !info.text.is_empty() {
+                        builder = builder
+                            .unmodified_text(info.text)
+                            .text(info.text);
                     }
+                    builder.build().map_err(|err| anyhow!(err))
                 };
                 page.execute(build_params(
                     input::DispatchKeyEventType::RawKeyDown,
                 )?)
                 .await?;
-                page.execute(build_params(input::DispatchKeyEventType::Char)?)
+                if !info.text.is_empty() {
+                    page.execute(
+                        build_params(input::DispatchKeyEventType::Char)?,
+                    )
                     .await?;
+                }
                 page.execute(build_params(input::DispatchKeyEventType::KeyUp)?)
                     .await?;
             }
