@@ -72,6 +72,58 @@ fn call_random_range(
     result.as_number().unwrap()
 }
 
+#[test]
+fn keycodes_matches_supported_key_codes() {
+    use crate::browser::keys::SUPPORTED_KEY_CODES;
+
+    let (mut context, module) = load_random_module(vec![]);
+
+    // Call keycodes() to get a From<number> generator instance.
+    let keycodes_fn = js::module_exports(&module, &mut context)
+        .unwrap()
+        .get(&PropertyKey::String(js_string!("keycodes")))
+        .unwrap()
+        .clone();
+    let generator = keycodes_fn
+        .as_callable()
+        .unwrap()
+        .call(&JsValue::undefined(), &[], &mut context)
+        .unwrap();
+
+    // The From<T> class stores its array as `this.elements` (TypeScript
+    // `private` is compile-time only; the property is accessible at runtime).
+    let elements_val = generator
+        .as_object()
+        .unwrap()
+        .get(js_string!("elements"), &mut context)
+        .unwrap();
+    let elements_obj = elements_val.as_object().unwrap();
+    let length = elements_obj
+        .get(js_string!("length"), &mut context)
+        .unwrap()
+        .to_u32(&mut context)
+        .unwrap() as usize;
+
+    let mut ts_codes: Vec<u8> = (0..length as u32)
+        .map(|i| {
+            elements_obj
+                .get(i, &mut context)
+                .unwrap()
+                .to_u32(&mut context)
+                .unwrap() as u8
+        })
+        .collect();
+    ts_codes.sort_unstable();
+
+    let mut rust_codes: Vec<u8> = SUPPORTED_KEY_CODES.to_vec();
+    rust_codes.sort_unstable();
+
+    assert_eq!(
+        ts_codes, rust_codes,
+        "TypeScript keycodes() elements must match Rust SUPPORTED_KEY_CODES"
+    );
+}
+
 proptest! {
     #[test]
     fn test_random_range(

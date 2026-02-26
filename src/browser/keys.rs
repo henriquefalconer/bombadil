@@ -10,6 +10,13 @@ pub struct KeyInfo {
 pub const SUPPORTED_KEY_CODES: &[u8] = &[8, 9, 13, 27, 37, 38, 39, 40];
 
 pub fn key_info(code: u8) -> Option<KeyInfo> {
+    // NOTE: For this set of special keys `code` and `key` happen to be
+    // identical strings. This is correct per CDP spec for named keys
+    // (Backspace, Tab, Enter, Escape, Arrow*). For other key categories
+    // they must diverge — do NOT copy this pattern blindly:
+    //   • Printable chars: code=49 → code:"Digit1", key:"1"
+    //   • Modifiers:       code=16 → code:"ShiftLeft", key:"Shift"
+    //   • Numpad:          code=96 → code:"Numpad0", key:"0"
     match code {
         8 => Some(KeyInfo {
             code: "Backspace",
