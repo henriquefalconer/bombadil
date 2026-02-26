@@ -1,138 +1,166 @@
-# Comparison: develop vs antithesishq/main
+# Comparison: feat/keys vs develop
 
-This document describes only the code that was altered or added in the `develop` branch relative to `antithesishq/main`. Nothing from the original codebase is described here.
+This document describes only the code that was altered between the `develop` and `feat/keys` branches. No pre-existing code is described unless it is directly adjacent to a change and required for context.
 
 ---
 
-## Change 1: Response Header Forwarding (`src/browser/instrumentation.rs`)
+## Changed Files
 
-### What Was Changed
+Three files were modified. No files were added or removed.
 
-The original code in `instrument_js_coverage` used `FulfillRequestParams` with a single `.response_header()` call that set only a synthetic `etag`. This replaced **all** upstream response headers with just that one header. There was a `// TODO: forward headers` comment acknowledging this was incomplete.
+### 1. `src/browser/keys.rs`
 
-The new code replaces this with:
-
-1. **`STRIPPED_RESPONSE_HEADERS` constant** (lines 18–44): A denylist of 5 header names (`etag`, `content-length`, `content-encoding`, `transfer-encoding`, `digest`) that are stripped because instrumentation invalidates them. Each entry has an inline comment explaining why.
-
-2. **`build_response_headers` function** (lines 367–404): Takes the original response headers, resource type, and source ID. Filters out stripped headers, applies resource-type-aware CSP handling, and appends a synthetic `etag`. Called from the `FulfillRequestParams` builder via `.response_headers(...)` instead of the old `.response_header(...)`.
-
-3. **`sanitize_csp` function** (lines 279–353): Parses CSP header values and strips only instrumentation-sensitive values (`'sha256-…'`, `'sha384-…'`, `'sha512-…'`, `'nonce-…'`, `'strict-dynamic'`) from `script-src`, `script-src-elem`, and (when no explicit script-src exists) `default-src`. Also strips `report-uri` and `report-to` directives. Returns `None` when all directives are stripped.
-
-4. **Resource-type-aware CSP handling in `build_response_headers`**: For `Script` resources, CSP headers are dropped entirely. For `Document` resources, CSP headers are sanitized via `sanitize_csp`. For other resource types (currently unreachable), CSP headers pass through unchanged.
-
-5. **`resource_type` capture** (line 187): `let resource_type = event.resource_type.clone();` added before the builder to avoid borrow conflicts.
-
-### Original Code Replaced
+**Before (develop):**
 
 ```rust
-.response_header(fetch::HeaderEntry {
-    name: "etag".to_string(),
-    value: format!("{}", source_id.0),
-})
-// TODO: forward headers
+pub fn key_name(code: u8) -> Option<&'static str> {
+    match code {
+        13 => Some("Enter"),
+        27 => Some("Escape"),
+        _ => None,
+    }
+}
 ```
 
-### New Code
+**After (feat/keys):**
 
 ```rust
-let resource_type = event.resource_type.clone();
-// ...
-.response_headers(build_response_headers(
-    &event.response_headers,
-    &resource_type,
-    source_id,
-))
+pub struct KeyInfo {
+    pub name: &'static str,
+    pub text: &'static str,
+}
+
+pub fn key_info(code: u8) -> Option<KeyInfo> {
+    match code {
+        8  => Some(KeyInfo { name: "Backspace",  text: "\u{0008}" }),
+        9  => Some(KeyInfo { name: "Tab",        text: "\t" }),
+        13 => Some(KeyInfo { name: "Enter",      text: "\r" }),
+        27 => Some(KeyInfo { name: "Escape",     text: "" }),
+        37 => Some(KeyInfo { name: "ArrowLeft",  text: "" }),
+        38 => Some(KeyInfo { name: "ArrowUp",    text: "" }),
+        39 => Some(KeyInfo { name: "ArrowRight", text: "" }),
+        40 => Some(KeyInfo { name: "ArrowDown",  text: "" }),
+        _  => None,
+    }
+}
 ```
 
----
-
-## Change 2: Unit Tests for Header/CSP Logic (`src/browser/instrumentation.rs`)
-
-### What Was Added
-
-A `#[cfg(test)] mod tests` block (lines 406–756) containing:
-
-- **20 `sanitize_csp_*` tests**: Cover SHA-256/384/512 hash removal, nonce removal, mixed directives, empty results, `script-src-elem`, `default-src` fallback when no `script-src` present, `default-src` untouched when `script-src` present, `strict-dynamic` removal, `report-uri`/`report-to` stripping.
-
-- **9 `build_headers_*` tests**: Cover stripped header removal, `content-type` preservation, CSP dropped for Script resources, CSP sanitized for Document resources, report-only CSP handling, synthetic etag appended, `None` headers yield only etag, non-stripped headers pass through.
-
-- **2 helper functions**: `hdr(name, value)` and `sid(n)` for test convenience.
+**What changed:**
+- The function was renamed from `key_name` to `key_info`.
+- The return type changed from `Option<&'static str>` to `Option<KeyInfo>`.
+- A new `KeyInfo` struct was introduced with two fields: `name` (the key identifier used for CDP `code` and `key` fields) and `text` (the character payload for CDP `text`/`unmodified_text` fields).
+- Six new key mappings were added: Backspace (8), Tab (9), ArrowLeft (37), ArrowUp (38), ArrowRight (39), ArrowDown (40).
+- The pre-existing Enter (13) and Escape (27) mappings were preserved, with Enter gaining an explicit `text: "\r"` and Escape gaining `text: ""`.
+- The `text` field is non-empty for Backspace (`"\u{0008}"`), Tab (`"\t"`), and Enter (`"\r"`), and empty for Escape and all four arrow keys.
 
 ---
 
-## Change 3: Integration Test Refactoring (`tests/integration_tests.rs`)
+### 2. `src/browser/actions.rs`
 
-### What Was Changed
+Only the `PressKey` match arm changed. The import line changed from `use crate::browser::keys::key_name;` to `use crate::browser::keys::key_info;`.
 
-1. **`run_browser_test` split into two functions**: The original `run_browser_test` created the `Router` internally. Now `run_browser_test_with_router` accepts an `app: Router` parameter with the full implementation, and `run_browser_test` is a thin wrapper that creates the default `ServeDir` router and delegates.
+**Before (develop) — PressKey arm:**
 
-2. **Doc comment moved**: Full doc comment on the wrapper (`run_browser_test`). One-liner on the inner function referencing the wrapper.
+```rust
+BrowserAction::PressKey { code } => {
+    let build_params = |event_type| {
+        if let Some(name) = key_name(*code) {
+            input::DispatchKeyEventParams::builder()
+                .r#type(event_type)
+                .native_virtual_key_code(*code as i64)
+                .windows_virtual_key_code(*code as i64)
+                .code(name)
+                .key(name)
+                .unmodified_text("\r")
+                .text("\r")
+                .build()
+                .map_err(|err| anyhow!(err))
+        } else {
+            bail!("unknown key with code: {:?}", code)
+        }
+    };
+    page.execute(build_params(
+        input::DispatchKeyEventType::RawKeyDown,
+    )?)
+    .await?;
+    page.execute(build_params(input::DispatchKeyEventType::Char)?)
+        .await?;
+    page.execute(build_params(input::DispatchKeyEventType::KeyUp)?)
+        .await?;
+}
+```
 
-3. **Doc comment fixed**: URL pattern corrected from `http://localhost:{P}/tests/{name}.` to `http://localhost:{P}/{name}`. Typo `facitiliate` corrected to `facilitate`.
+**After (feat/keys) — PressKey arm:**
 
-4. **Removed CI cache-buster log**: `log::info!("just changing for CI");` removed from `test_browser_lifecycle`.
+```rust
+BrowserAction::PressKey { code } => {
+    let info = key_info(*code)
+        .ok_or_else(|| anyhow!("unknown key with code: {:?}", code))?;
+    let build_params = |event_type| {
+        let mut builder = input::DispatchKeyEventParams::builder()
+            .r#type(event_type)
+            .native_virtual_key_code(*code as i64)
+            .windows_virtual_key_code(*code as i64)
+            .code(info.name)
+            .key(info.name);
+        if !info.text.is_empty() {
+            builder = builder
+                .unmodified_text(info.text)
+                .text(info.text);
+        }
+        builder.build().map_err(|err| anyhow!(err))
+    };
+    page.execute(build_params(
+        input::DispatchKeyEventType::RawKeyDown,
+    )?)
+    .await?;
+    if !info.text.is_empty() {
+        page.execute(
+            build_params(input::DispatchKeyEventType::Char)?,
+        )
+        .await?;
+    }
+    page.execute(build_params(input::DispatchKeyEventType::KeyUp)?)
+        .await?;
+}
+```
 
-5. **Import additions**: `axum::{extract::Request, http::HeaderValue, middleware, response::Response}` and `tower_http::compression::CompressionLayer`.
+**What changed:**
+- Key lookup moved from inside the closure to before it: `key_info(*code)` is called once and the result (`info`) is captured by the closure.
+- Error handling changed from `if let Some(name) / else bail!` inside the closure to `.ok_or_else(|| anyhow!(...))` before the closure.
+- The hardcoded `.text("\r")` and `.unmodified_text("\r")` were replaced with conditional setting: text fields are only set when `info.text` is non-empty.
+- The `Char` event dispatch was made conditional: it is only sent when `info.text` is non-empty. Previously it was always sent for every key.
+- The three-event sequence changed from unconditional `RawKeyDown + Char + KeyUp` to conditional `RawKeyDown + [Char if text] + KeyUp`.
 
 ---
 
-## Change 4: Four New Integration Tests (`tests/integration_tests.rs`)
+### 3. `src/specification/random.ts`
 
-All new tests use `Expect::Success` with `Duration::from_secs(30)`:
+**Before (develop):**
 
-| Test | Router | Fixture | Verifies |
-|------|--------|---------|----------|
-| `test_external_module_script` | default | `external-module-script/` | `<script type="module" src="...">` loads after instrumentation (content-type preserved) |
-| `test_compressed_script` | `CompressionLayer` | `compressed-script/` | Compressed script works after instrumentation (stale content-encoding stripped). Uses `type="module"` as content-type regression guard. |
-| `test_csp_script` | `make_csp_router(hash + img-src)` | `csp-script/` | Script loads despite hash-based CSP (CSP dropped for Script) AND `img-src 'none'` enforced on Document (CSP sanitized, non-script directives preserved) |
-| `test_csp_document_directives_preserved` | `make_csp_router(mixed CSP)` | `csp-document/` | Document CSP sanitized: script hashes stripped, `img-src 'self'` preserved and enforced |
+```typescript
+export function keycodes(): Generator<number> {
+  return from([8, 9, 13, 27]);
+}
+```
 
-### New Helper
+**After (feat/keys):**
 
-`make_csp_router(csp: &'static str) -> Router`: Creates a router with axum middleware that injects a `content-security-policy` header on every response.
+```typescript
+export function keycodes(): Generator<number> {
+  return from([8, 9, 13, 27, 37, 38, 39, 40]);
+}
+```
 
----
-
-## Change 5: Test Fixture Files
-
-| Path | Content |
-|------|---------|
-| `tests/shared/script.js` | `document.getElementById("result").textContent = "LOADED";` |
-| `tests/external-module-script/index.html` | Loads `/shared/script.js` as `<script type="module">` |
-| `tests/compressed-script/index.html` | Same structure, `<title>Compressed Script</title>` |
-| `tests/csp-script/index.html` | Loads `/shared/script.js` as classic `<script>`, plus inline CSP violation detection |
-| `tests/csp-document/index.html` | Inline-only CSP violation detection |
-
-All fixtures follow existing structure: `<html>`, `<head>`, `<title>`, `<body>`, `<h1 id="result">WAITING</h1>`.
+**What changed:**
+- Four arrow key codes were added to the random generator: ArrowLeft (37), ArrowUp (38), ArrowRight (39), ArrowDown (40).
 
 ---
 
-## Change 6: Build Configuration
+## Bugs Fixed by These Changes
 
-### `Cargo.toml`
+Two pre-existing bugs in `develop` are fixed by this branch:
 
-`tower-http` dev-dependency gained `compression-gzip` feature (required for `CompressionLayer` in `test_compressed_script`).
+1. **Escape dispatched with Enter's text**: On develop, the PressKey handler unconditionally set `.text("\r")` and `.unmodified_text("\r")` and always sent a `Char` event. This meant Escape (code 27) was dispatched with carriage-return text and a spurious Char event. The new code correctly omits text and the Char event for keys with empty `text`.
 
-### `Cargo.lock`
-
-Added transitive dev-dependencies: `async-compression`, `compression-codecs`, `compression-core`.
-
-### `.cargo/config.toml` (new file)
-
-Linker configuration for `aarch64-unknown-linux-gnu` (sandbox/CI build environment, not a behavioral change).
-
-### `AGENTS.md`
-
-Added "Sandboxed Build Environment" section documenting sandbox-specific build requirements.
-
----
-
-## Change 7: Non-Code Files
-
-Development artifacts added in `develop` that are not part of the runtime behavior:
-
-- `ISSUE.md`, `IMPLEMENTATION_PLAN.md`: Bug description and progress tracking
-- `PROMPT_build.md`, `PROMPT_plan.md`, `PROMPT_security.md`: AI assistant prompts
-- `SYNTHESIS.md`: Development analysis
-- `SECURITY.md`, `SECURITY_ANALYSIS.md`, `PATTERNS.md`: Analysis documents
-- `loop.sh`: Shell script for iterative development
+2. **Backspace and Tab caused runtime errors**: On develop, `keycodes()` returned `from([8, 9, 13, 27])` but `key_name()` only handled codes 13 and 27. When keycodes generated 8 (Backspace) or 9 (Tab), `key_name` returned `None` and the `bail!` path triggered, causing the action to fail. This meant 50% of randomly generated PressKey actions were guaranteed errors. The new code adds these keys to `key_info()`, resolving the mismatch.

@@ -1,37 +1,36 @@
-# Security Assessment: develop vs antithesishq/main
+# Security Assessment: feat/keys vs develop
 
 ## Summary
 
-The `develop` branch fixes a bug where `instrument_js_coverage` dropped **all** response headers when fulfilling intercepted requests via CDP's `Fetch.fulfillRequest`. The original code replaced the entire header set with a single synthetic `etag`, silently removing every security and functional header (CORS, HSTS, CSP, content-type, etc.) from every intercepted Script and Document response. The fix forwards upstream headers while stripping only those invalidated by body instrumentation, and adds resource-type-aware CSP handling.
+The `feat/keys` branch adds support for arrow keys (Left, Up, Right, Down) and fixes handling of Backspace, Tab, and Escape in the CDP key dispatch logic. The changes are limited to key event construction and the random key code generator. No new security surface is introduced.
 
 ## What Changed
 
-1. **Header forwarding with denylist** — upstream response headers are now preserved by default. A named constant `STRIPPED_RESPONSE_HEADERS` lists the five headers invalidated by instrumentation: `etag`, `content-length`, `content-encoding`, `transfer-encoding`, `digest`. All other headers pass through unchanged.
+1. **Key lookup expanded** — `key_info()` replaces `key_name()`, returning a `KeyInfo` struct with both a name and a text payload. Six new keys added (Backspace, Tab, ArrowLeft, ArrowUp, ArrowRight, ArrowDown) alongside the pre-existing Enter and Escape.
 
-2. **CSP sanitization** — `content-security-policy` and `content-security-policy-report-only` headers receive resource-type-aware treatment:
-   - **Script resources**: CSP is dropped entirely (instrumented body invalidates hash-based `script-src`).
-   - **Document resources**: CSP is sanitized — hash/nonce values and orphaned `strict-dynamic` are stripped from `script-src`/`script-src-elem` (falling back to `default-src` when neither is present). `report-uri` and `report-to` are stripped to prevent false-positive reports. All other directives (`img-src`, `frame-ancestors`, `connect-src`, etc.) are preserved.
-   - **Other resource types**: CSP is forwarded unchanged.
+2. **CDP event dispatch corrected** — The `Char` event and `text`/`unmodified_text` fields are now conditionally set based on whether the key produces text. Previously, all keys (including Escape) were sent with `"\r"` text and a `Char` event.
 
-3. **Test coverage** — 20 unit tests for `sanitize_csp`, 9 unit tests for `build_response_headers`, and 4 new integration tests.
+3. **Random key generator expanded** — `keycodes()` now includes arrow key codes (37–40) in addition to the pre-existing codes (8, 9, 13, 27).
 
 ## Security Posture
 
-The changes **improve** the security posture relative to `antithesishq/main`:
+The changes have **no security impact**:
 
-- **Before (main)**: All response headers were dropped. Every security header was silently removed from every intercepted response.
-- **After (develop)**: All response headers are preserved except the five that instrumentation directly invalidates, plus CSP which receives targeted sanitization rather than wholesale removal.
+- **No new network surface**: No new CDP commands, no new protocol interactions, no new request/response handling.
+- **No new data flow**: Key codes are generated internally from a fixed set and dispatched to the already-connected browser page. No user-controlled input is introduced.
+- **Validation unchanged**: `JsAction::to_browser_action()` continues to validate that key codes are finite integers in the 0–255 range. The `key_info()` function returns `None` for unrecognized codes, which surfaces as an `anyhow` error.
+- **No privilege change**: The CDP `Input.dispatchKeyEvent` command operates within the same security context as all other browser actions (Click, TypeText, ScrollUp, etc.).
 
-## Remaining Risks
+## Correctness Concerns
 
-1. **content-type preservation is implicit** — `content-type` is critical for ES module MIME type enforcement. Its preservation depends solely on its absence from the denylist. Existing unit tests (`build_headers_preserves_content_type`) and integration tests (`test_external_module_script`) catch regression, but the protection is indirect. A future maintainer adding `content-type` to the denylist would silently break all module scripts.
+Two correctness issues exist that, while not security vulnerabilities, affect the fidelity of key simulation:
 
-2. **CSP sanitization is best-effort** — Handles the most common CSP patterns but does not cover every construct. Unusual keywords like `'unsafe-hashes'` are left orphaned when their accompanying hashes are stripped (harmless but semantically dead). `require-trusted-types-for` and `sandbox` are forwarded unchanged, which is the correct conservative default.
+1. **Backspace text value (`"\u{0008}`)**: Chrome DevTools Protocol implementations (e.g., Puppeteer) typically dispatch Backspace without a text payload — the `Char` event is not sent and `text`/`unmodified_text` are omitted. The current implementation sends `"\u{0008}"` as text and dispatches a `Char` event, which may cause different behavior than a real Backspace keypress in some contexts (e.g., the browser might interpret the control character differently than the delete-backward action triggered by the raw key event).
 
-3. **strict-dynamic removal widens policy** — When `strict-dynamic` is removed (because its trust anchors are stripped), `unsafe-inline` and host-based sources become active. This is intentionally more permissive to allow instrumented scripts to execute during testing. The effective CSP during testing is weaker than production for script-loading decisions.
+2. **Tab text value (`"\t"`)**: Similarly, Puppeteer dispatches Tab without text. A real Tab keypress in Chrome triggers focus navigation, not text insertion. Sending `"\t"` as text with a `Char` event may cause a literal tab character to be inserted into text inputs instead of moving focus to the next element.
 
-4. **Denylist assumes completeness** — If a server sends a body-integrity header not in the denylist (e.g., RFC 9530's `repr-digest`), it will be forwarded with an incorrect value. Unlikely to cause security issues; could cause functional failures in specific deployments. The denylist approach is strictly more correct than dropping everything.
+Neither issue creates a security risk. Both affect testing fidelity — the simulated key events may not behave identically to real user input in all contexts.
 
 ## Conclusion
 
-No new security vulnerabilities are introduced. The header forwarding approach is strictly more correct than the previous behavior. The denylist is conservative, well-documented, and each entry has a stated reason. CSP handling is thorough for common cases and fails safe when in doubt.
+No security vulnerabilities are introduced. The changes are narrowly scoped to key event handling and do not interact with any security-sensitive systems (headers, CSP, network interception, instrumentation). The two correctness concerns (Backspace and Tab text values) affect simulation fidelity but not security.

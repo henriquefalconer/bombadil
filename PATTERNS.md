@@ -35,6 +35,12 @@
 - Values that control behavior (header lists, timeouts, size limits, namespace strings) should be defined as named `const` or `static` items at module or function level, not inline in closures or expressions. This makes them discoverable, referenceable, and testable.
 - Follow the existing naming convention: `SCREAMING_SNAKE_CASE` for constants.
 
+# Cross-Boundary Contracts
+
+- When the same set of values must exist in both TypeScript and Rust (e.g., key codes in `keycodes()` and `key_info()`, action variant names in `Action` and `JsAction`), keep the two definitions adjacent in intent and verify they match after every change. A mismatch produces runtime errors that are not caught at compile time.
+- When a protocol or API defines distinct concepts for the same domain (e.g., CDP's `code` vs `key` for keyboard events), the Rust data model should preserve the distinction even if current values happen to be identical. Use separate struct fields rather than reusing one field for both, so that future additions cannot silently conflate them.
+- When simulating browser input via CDP, match the event sequence and field values used by reference implementations (e.g., Puppeteer's `USKeyboardLayout`). Deviations from reference behavior should be documented with the reason for divergence.
+
 # Header Handling
 
 - When constructing response headers for `Fetch.fulfillRequest`, document why each header is stripped. The strip list is a security-sensitive surface — every entry and every omission should have a stated reason.
