@@ -6,7 +6,7 @@ This document describes only the code that was altered between the `develop` and
 
 ## Changed Files
 
-Four source files were modified and one new test fixture directory was added.
+Four source files were modified, one new test file was added, and one new test fixture directory was created.
 
 ### 1. `src/browser/keys.rs`
 
@@ -24,7 +24,7 @@ pub fn key_name(code: u8) -> Option<&'static str> {
 }
 ```
 
-No struct. No constants. No unit tests.
+No struct. No constants. No unit tests. The entire file was 7 lines.
 
 #### After (feat/keys)
 
@@ -51,21 +51,43 @@ The `key_info` function maps eight key codes (up from two):
 | 39   | ArrowRight  | ArrowRight  | `""`        |
 | 40   | ArrowDown   | ArrowDown   | `""`        |
 
-A `SUPPORTED_KEY_CODES` constant lists all eight codes with a doc comment referencing the TypeScript `keycodes()` function as the other side of the cross-boundary contract.
+A `SUPPORTED_KEY_CODES` constant lists all eight codes with a doc comment referencing the TypeScript `keycodes()` function as the other side of the cross-boundary contract:
+
+```rust
+/// All key codes supported by Bombadil. Must match `keycodes()` in
+/// `src/specification/random.ts` — that list is the TypeScript side of this
+/// cross-boundary contract.
+pub const SUPPORTED_KEY_CODES: &[u8] = &[8, 9, 13, 27, 37, 38, 39, 40];
+```
+
+A comment inside `key_info()` warns that `code` and `key` are coincidentally identical for the current set of named keys and must diverge for other key categories:
+
+```rust
+// NOTE: For this set of special keys `code` and `key` happen to be
+// identical strings. This is correct per CDP spec for named keys
+// (Backspace, Tab, Enter, Escape, Arrow*). For other key categories
+// they must diverge — do NOT copy this pattern blindly:
+//   • Printable chars: code=49 → code:"Digit1", key:"1"
+//   • Modifiers:       code=16 → code:"ShiftLeft", key:"Shift"
+//   • Numpad:          code=96 → code:"Numpad0", key:"0"
+```
 
 A `#[cfg(test)] mod tests` block was added with seven unit tests:
-- One per named key verifying `code`, `key`, and `text` fields
-- Arrow keys tested as a group via loop
-- Unknown codes returning `None`
-- All `SUPPORTED_KEY_CODES` entries having corresponding `key_info` results
+- `backspace_has_no_text`: verifies code, key, and empty text for code 8
+- `tab_has_no_text`: verifies code, key, and empty text for code 9
+- `enter_has_text`: verifies code, key, and `"\r"` text for code 13
+- `escape_has_no_text`: verifies code, key, and empty text for code 27
+- `arrow_keys_have_no_text`: loop over codes 37–40 verifying code, key, and empty text
+- `unknown_codes_return_none`: verifies codes 0 and 255 return `None`
+- `all_supported_codes_have_key_info`: iterates `SUPPORTED_KEY_CODES` and asserts each returns `Some` from `key_info()`
 
 #### What Changed in Substance
 
-- The return type changed from `Option<&'static str>` to `Option<KeyInfo>`, introducing a struct that bundles separate CDP `code` and `key` fields with the text payload for dispatch.
+- Return type changed from `Option<&'static str>` to `Option<KeyInfo>`, introducing a struct that bundles separate CDP `code` and `key` fields with the text payload for dispatch.
 - The text field distinguishes keys that produce character input (Enter → `"\r"`) from keys that only produce key events (all others → `""`).
 - Six new key codes were added (8, 9, 37, 38, 39, 40).
-- A `SUPPORTED_KEY_CODES` constant was added as the Rust side of the cross-boundary contract.
-- Unit tests were added covering all keys and the `SUPPORTED_KEY_CODES` ↔ `key_info` invariant.
+- `SUPPORTED_KEY_CODES` constant added as the Rust side of the cross-boundary contract.
+- Unit tests added covering all keys and the `SUPPORTED_KEY_CODES` ↔ `key_info` invariant.
 
 ---
 
@@ -73,7 +95,7 @@ A `#[cfg(test)] mod tests` block was added with seven unit tests:
 
 #### Before (develop)
 
-The `PressKey` arm called `key_name(*code)` inside a closure, and unconditionally set `.text("\r")` and `.unmodified_text("\r")` on every key dispatch. It always sent three CDP events: `RawKeyDown`, `Char`, `KeyUp`. The error for unknown key codes was raised inside the closure.
+The `PressKey` arm called `key_name(*code)` inside a closure, and unconditionally set `.text("\r")` and `.unmodified_text("\r")` on every key dispatch. It always sent three CDP events: `RawKeyDown`, `Char`, `KeyUp`. The error for unknown key codes was raised inside the closure via `bail!`.
 
 ```rust
 BrowserAction::PressKey { code } => {
@@ -101,7 +123,7 @@ BrowserAction::PressKey { code } => {
 
 #### After (feat/keys)
 
-The error check was moved before the closure using `.ok_or_else()`. The closure now sets `.code(info.code)` and `.key(info.key)` as separate fields. Text and `Char` event are conditionally included only when `info.text` is non-empty.
+The import changed from `key_name` to `key_info`. The error check was moved before the closure using `.ok_or_else()`. The closure now sets `.code(info.code)` and `.key(info.key)` as separate struct field accesses. Text and the `Char` event are conditionally included only when `info.text` is non-empty.
 
 ```rust
 BrowserAction::PressKey { code } => {
@@ -130,11 +152,11 @@ BrowserAction::PressKey { code } => {
 
 #### What Changed in Substance
 
-- The import changed from `key_name` to `key_info`.
-- The error for unknown key codes is raised earlier (before the closure) rather than inside the closure on every invocation.
-- CDP `code` and `key` fields are set from separate `info.code` and `info.key` values (previously both came from a single `name` string).
-- Text payload is conditionally attached: keys with empty text no longer send `text` or `unmodified_text` fields.
-- The `Char` event is conditionally skipped for non-text keys, so the browser receives only `RawKeyDown` + `KeyUp` for these keys, allowing native behavior (Tab moves focus, Backspace deletes, arrows navigate).
+- Import changed from `key_name` to `key_info`.
+- Error for unknown key codes raised earlier (before the closure) rather than inside the closure on every invocation.
+- CDP `code` and `key` fields set from separate `info.code` and `info.key` values (previously both from a single `name` string).
+- Text payload conditionally attached: keys with empty text no longer send `text` or `unmodified_text` fields.
+- `Char` event conditionally skipped for non-text keys, so the browser receives only `RawKeyDown` + `KeyUp` for these keys, allowing native behavior (Tab moves focus, Backspace deletes, arrows navigate).
 
 ---
 
@@ -160,13 +182,72 @@ export function keycodes(): Generator<number> {
 
 Four arrow key codes (37–40) were added to the random key code generator. The default action set can now randomly produce arrow key presses during fuzzing.
 
-Note: on develop, `keycodes()` already included codes 8 (Backspace) and 9 (Tab), but the Rust `key_name()` function did not recognize them — they would produce "unknown key" errors at runtime. The feat/keys branch adds Rust-side support for these codes.
+Note: on develop, `keycodes()` already included codes 8 (Backspace) and 9 (Tab), but the Rust `key_name()` function did not recognize them — they would produce "unknown key" errors at runtime. The feat/keys branch adds Rust-side support for these codes, fixing the pre-existing mismatch.
 
 ---
 
-### 4. `tests/integration_tests.rs`
+### 4. `src/specification/random_test.rs`
 
-A new test function `test_key_press_tab_moves_focus` was added:
+A new test function `keycodes_matches_supported_key_codes` was added. No existing code was modified.
+
+```rust
+#[test]
+fn keycodes_matches_supported_key_codes() {
+    use crate::browser::keys::SUPPORTED_KEY_CODES;
+
+    let (mut context, module) = load_random_module(vec![]);
+
+    let keycodes_fn = js::module_exports(&module, &mut context)
+        .unwrap()
+        .get(&PropertyKey::String(js_string!("keycodes")))
+        .unwrap()
+        .clone();
+    let generator = keycodes_fn
+        .as_callable()
+        .unwrap()
+        .call(&JsValue::undefined(), &[], &mut context)
+        .unwrap();
+
+    let elements_val = generator
+        .as_object()
+        .unwrap()
+        .get(js_string!("elements"), &mut context)
+        .unwrap();
+    let elements_obj = elements_val.as_object().unwrap();
+    let length = elements_obj
+        .get(js_string!("length"), &mut context)
+        .unwrap()
+        .to_u32(&mut context)
+        .unwrap() as usize;
+
+    let mut ts_codes: Vec<u8> = (0..length as u32)
+        .map(|i| {
+            elements_obj
+                .get(i, &mut context)
+                .unwrap()
+                .to_u32(&mut context)
+                .unwrap() as u8
+        })
+        .collect();
+    ts_codes.sort_unstable();
+
+    let mut rust_codes: Vec<u8> = SUPPORTED_KEY_CODES.to_vec();
+    rust_codes.sort_unstable();
+
+    assert_eq!(
+        ts_codes, rust_codes,
+        "TypeScript keycodes() elements must match Rust SUPPORTED_KEY_CODES"
+    );
+}
+```
+
+The test loads the `random.js` module via the Boa JS engine, calls `keycodes()`, introspects the resulting `From<number>` generator's `elements` array at runtime (TypeScript `private` is compile-time only), collects and sorts the values, then asserts sorted equality with the Rust `SUPPORTED_KEY_CODES` constant.
+
+---
+
+### 5. `tests/integration_tests.rs`
+
+A new test function `test_key_press_tab_moves_focus` was added. No existing code was modified.
 
 ```rust
 #[tokio::test]
@@ -193,13 +274,13 @@ export const tab_moves_focus_to_second_input = eventually(
 }
 ```
 
-The test exports only a `tabKey` action (no `clicks`). It verifies that pressing Tab (code 9) moves focus from the first input to the second by checking `activeElement.id`.
+The test exports only a `tabKey` action (no `clicks`). It verifies that pressing Tab (code 9) moves focus from the first input to the second by checking `activeElement.id`. Uses `TEST_TIMEOUT_SECONDS` (120s) and an LTL `eventually(...).within(10, "seconds")` bound.
 
 ---
 
-### 5. `tests/key-press/index.html` (new file)
+### 6. `tests/key-press/index.html` (new file)
 
-A new test fixture with two text inputs and a result div:
+A new test fixture directory with a minimal HTML page:
 
 ```html
 <html>
@@ -214,15 +295,17 @@ A new test fixture with two text inputs and a result div:
 </html>
 ```
 
-The first input has `autofocus`. The fixture follows the minimal HTML style (no `<!DOCTYPE html>`, no `<meta>`, no `lang` attribute) consistent with the documented fixture pattern.
+The first input has `autofocus` so focus starts there. The fixture follows the minimal HTML style (no `<!DOCTYPE html>`, no `<meta>`, no `lang` attribute) consistent with other fixtures in the `tests/` directory.
 
 ---
 
 ## Files NOT Changed
 
-- `src/browser.rs` (module declarations unchanged — `keys` was already declared as `pub mod keys;`)
-- `src/specification/js.rs` (JsAction enum and conversion logic unchanged — PressKey variant already existed)
-- `src/specification/actions.ts` (Action type unchanged — PressKey variant already existed)
-- `src/specification/defaults/actions.ts` (default actions unchanged — already used `keycodes().generate()`)
-- `src/runner.rs` (action timeout for PressKey already set at 50ms)
-- `Cargo.toml`, `package.json`, build configuration
+The following files are relevant to the key press feature but were not modified:
+
+- `src/browser.rs` — module declarations unchanged; `keys` was already declared as `pub mod keys;`
+- `src/specification/js.rs` — `JsAction` enum and conversion logic unchanged; `PressKey` variant already existed
+- `src/specification/actions.ts` — `Action` type unchanged; `PressKey` variant already existed
+- `src/specification/defaults/actions.ts` — default actions unchanged; already used `keycodes().generate()`
+- `src/runner.rs` — action timeout for `PressKey` already set at 50ms
+- `Cargo.toml`, `package.json`, build configuration — no dependency or build changes
