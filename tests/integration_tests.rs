@@ -573,14 +573,6 @@ export const csp_script_loads_and_csp_enforced = eventually(
 
 #[tokio::test]
 async fn test_key_press_tab_moves_focus() {
-    // Verifies Tab sends RawKeyDown+KeyUp only (no Char/insertText), so the
-    // browser's command pipeline moves focus rather than inserting a literal \t.
-    //
-    // Before fix: Tab had text="\t" → Char event → insertText("\t") → literal
-    // tab inserted in first input, focus never moves → eventually times out.
-    //
-    // After fix: Tab has text="" → no Char event → RawKeyDown triggers native
-    // Tab-focus-navigation → second input receives focus → eventually passes.
     run_browser_test(
         "key-press",
         Expect::Success,

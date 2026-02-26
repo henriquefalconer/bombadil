@@ -119,8 +119,8 @@ impl BrowserAction {
                         .r#type(event_type)
                         .native_virtual_key_code(*code as i64)
                         .windows_virtual_key_code(*code as i64)
-                        .code(info.name)
-                        .key(info.name);
+                        .code(info.code)
+                        .key(info.key);
                     if !info.text.is_empty() {
                         builder =
                             builder.unmodified_text(info.text).text(info.text);

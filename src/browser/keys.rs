@@ -1,40 +1,54 @@
 pub struct KeyInfo {
-    pub name: &'static str,
+    pub code: &'static str,
+    pub key: &'static str,
     pub text: &'static str,
 }
+
+/// All key codes supported by Bombadil. Must match `keycodes()` in
+/// `src/specification/random.ts` — that list is the TypeScript side of this
+/// cross-boundary contract.
+pub const SUPPORTED_KEY_CODES: &[u8] = &[8, 9, 13, 27, 37, 38, 39, 40];
 
 pub fn key_info(code: u8) -> Option<KeyInfo> {
     match code {
         8 => Some(KeyInfo {
-            name: "Backspace",
+            code: "Backspace",
+            key: "Backspace",
             text: "",
         }),
         9 => Some(KeyInfo {
-            name: "Tab",
+            code: "Tab",
+            key: "Tab",
             text: "",
         }),
         13 => Some(KeyInfo {
-            name: "Enter",
+            code: "Enter",
+            key: "Enter",
             text: "\r",
         }),
         27 => Some(KeyInfo {
-            name: "Escape",
+            code: "Escape",
+            key: "Escape",
             text: "",
         }),
         37 => Some(KeyInfo {
-            name: "ArrowLeft",
+            code: "ArrowLeft",
+            key: "ArrowLeft",
             text: "",
         }),
         38 => Some(KeyInfo {
-            name: "ArrowUp",
+            code: "ArrowUp",
+            key: "ArrowUp",
             text: "",
         }),
         39 => Some(KeyInfo {
-            name: "ArrowRight",
+            code: "ArrowRight",
+            key: "ArrowRight",
             text: "",
         }),
         40 => Some(KeyInfo {
-            name: "ArrowDown",
+            code: "ArrowDown",
+            key: "ArrowDown",
             text: "",
         }),
         _ => None,
@@ -46,35 +60,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_backspace_has_no_text() {
+    fn backspace_has_no_text() {
         let info = key_info(8).unwrap();
-        assert_eq!(info.name, "Backspace");
+        assert_eq!(info.code, "Backspace");
+        assert_eq!(info.key, "Backspace");
         assert_eq!(info.text, "");
     }
 
     #[test]
-    fn test_tab_has_no_text() {
+    fn tab_has_no_text() {
         let info = key_info(9).unwrap();
-        assert_eq!(info.name, "Tab");
+        assert_eq!(info.code, "Tab");
+        assert_eq!(info.key, "Tab");
         assert_eq!(info.text, "");
     }
 
     #[test]
-    fn test_enter_has_text() {
+    fn enter_has_text() {
         let info = key_info(13).unwrap();
-        assert_eq!(info.name, "Enter");
+        assert_eq!(info.code, "Enter");
+        assert_eq!(info.key, "Enter");
         assert_eq!(info.text, "\r");
     }
 
     #[test]
-    fn test_escape_has_no_text() {
+    fn escape_has_no_text() {
         let info = key_info(27).unwrap();
-        assert_eq!(info.name, "Escape");
+        assert_eq!(info.code, "Escape");
+        assert_eq!(info.key, "Escape");
         assert_eq!(info.text, "");
     }
 
     #[test]
-    fn test_arrow_keys_have_no_text() {
+    fn arrow_keys_have_no_text() {
         for (code, name) in [
             (37, "ArrowLeft"),
             (38, "ArrowUp"),
@@ -82,14 +100,25 @@ mod tests {
             (40, "ArrowDown"),
         ] {
             let info = key_info(code).unwrap();
-            assert_eq!(info.name, name);
+            assert_eq!(info.code, name);
+            assert_eq!(info.key, name);
             assert_eq!(info.text, "");
         }
     }
 
     #[test]
-    fn test_unknown_codes_return_none() {
+    fn unknown_codes_return_none() {
         assert!(key_info(0).is_none());
         assert!(key_info(255).is_none());
+    }
+
+    #[test]
+    fn all_supported_codes_have_key_info() {
+        for &code in SUPPORTED_KEY_CODES {
+            assert!(
+                key_info(code).is_some(),
+                "key_info({code}) returned None but {code} is in SUPPORTED_KEY_CODES"
+            );
+        }
     }
 }
